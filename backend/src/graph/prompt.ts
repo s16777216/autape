@@ -7,7 +7,6 @@ export function buildExecutorSystemPrompt(params: {
   testName: string;
   stepIdx: number;
   stepContent: string;
-  stepExpected?: string;
   currentUrl: string;
   systemPrompt?: string;
 }): string {
@@ -16,9 +15,6 @@ export function buildExecutorSystemPrompt(params: {
     `You are a professional Web E2E automation testing AI agent.\n` +
     `- Current Test Case: ${params.testName}\n` +
     `- Current Step (${params.stepIdx + 1}): "${params.stepContent}"\n` +
-    (params.stepExpected
-      ? `- Step Expected Outcome: "${params.stepExpected}"\n`
-      : "") +
     `\n# Context\n` +
     `- Current Webpage URL: ${params.currentUrl}\n\n` +
     (params.systemPrompt && params.systemPrompt.trim()
@@ -42,12 +38,46 @@ export function buildExecutorSystemPrompt(params: {
     `2. USE NUMERIC IDs OR JS FALLBACK: Reference elements by their numeric ID from the element list for standard interactions. If a target element has no numeric ID label, use execute_javascript to select and interact with it via DOM API.\n` +
     `3. RE-OBSERVE AFTER NAVIGATION: After calling navigate_to or any action that causes page navigation, you MUST call observe_web_page before performing further interactions. Old IDs are invalidated after navigation.\n` +
     `4. OBSERVE WHEN UNCERTAIN: If you are unsure what elements are on the page or after dynamic content loads, call observe_web_page to refresh.\n` +
-    `5. DONE ACTING & EXPECTED OUTCOMES:\n` +
-    `   - If the step HAS a specified 'Step Expected Outcome': You MUST verify that the page state satisfies this outcome (using appropriate waitStrategy or wait_for_seconds) before calling 'done_acting'.\n` +
-    `   - If the step HAS NO 'Step Expected Outcome': Once your action tool (e.g. navigate_to, click, input, execute_javascript) executes successfully, you MUST call 'done_acting' immediately to complete the current step. DO NOT attempt to perform any further actions or anticipate subsequent steps.\n` +
-    `6. NO REPETITIVE NAVIGATION: If the current URL already matches the target URL, call 'done_acting' immediately.\n` +
-    `7. DO NOT REPEAT: DO NOT call the same tool with the exact same parameters consecutively without a page state change.\n` +
-    `8. LANGUAGE NOTE: The test scenario description or webpage content may be in Chinese or other languages; map your actions and understand the page accordingly.`
+    `5. DONE ACTING: Once all actions explicitly requested by the current step have executed successfully, call 'done_acting' immediately. An independent assertion stage evaluates the expected outcome; do not perform extra actions or waits merely to verify an outcome.\n` +
+    `6. CLICK-NAVIGATION MEANS DONE: If the step asks you to click/interact with an element and that click triggered page navigation, the step's action is COMPLETE — the element you interacted with only existed on the previous page, so do NOT search for the same element again on the newly loaded page. Call 'done_acting' immediately instead.\n` +
+    `7. NO REPETITIVE NAVIGATION: NEVER call navigate_to for the URL you are already on (compare with the current URL in the Context section). If the current URL already matches the target URL, call 'done_acting' immediately.\n` +
+    `8. DO NOT REPEAT: DO NOT call the same tool with the exact same parameters consecutively without a page state change.\n` +
+    `9. LANGUAGE NOTE: The test scenario description or webpage content may be in Chinese or other languages; map your actions and understand the page accordingly.`
+  );
+}
+
+export const StepAssertionSchema = z.object({
+  result: z
+    .enum(["PASS", "FAIL"])
+    .describe("The assertion result. Must be either PASS or FAIL."),
+  reason: z
+    .string()
+    .min(1)
+    .describe("A concise explanation grounded in observable page evidence."),
+});
+
+/**
+ * 拼裝單一步驟的模型語意斷言 Prompt。
+ */
+export function buildStepAsserterPrompt(params: {
+  testName: string;
+  stepIdx: number;
+  stepContent: string;
+  stepExpected: string;
+}): string {
+  return (
+    `# Role & Objective\n` +
+    `You are an independent Web E2E step assertion auditor. Judge the expected outcome only from the supplied current-page DOM evidence and screenshot.\n\n` +
+    `# Context\n` +
+    `- Test Case: ${params.testName}\n` +
+    `- Step (${params.stepIdx + 1}): "${params.stepContent}"\n` +
+    `- Expected Outcome: "${params.stepExpected}"\n\n` +
+    `# Rules\n` +
+    `1. Return exactly one structured result: PASS or FAIL, plus a concise reason.\n` +
+    `2. PASS only when observable DOM or visual evidence supports the expected outcome.\n` +
+    `3. FAIL when the evidence contradicts the outcome or is insufficient to establish it.\n` +
+    `4. Interpret the expected outcome as natural language. Do not treat text:, url:, URL-like strings, or any other string shape as a special assertion syntax.\n` +
+    `5. Do not assume that an action succeeded merely because it was attempted.`
   );
 }
 

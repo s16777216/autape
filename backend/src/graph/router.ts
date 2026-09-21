@@ -5,10 +5,10 @@ import { LogEntry } from "../state.js";
  */
 export function routeAfterExecution(state: {
   logs: LogEntry[];
-  step_retry_count: number;
+  executor_turn_count: number;
   current_step_idx: number;
   step_expecteds: string[];
-}): "executor" | "step_tracker" | "reporter" {
+}): "executor" | "step_asserter" | "reporter" {
   const logs = state.logs || [];
   if (logs.length === 0) {
     return "executor";
@@ -19,10 +19,28 @@ export function routeAfterExecution(state: {
   const action = last_log.action || "";
 
   if (action.includes("done_acting")) {
+    return "step_asserter";
+  }
+
+  // 檢查動作輪次是否超限 (上限 5 次，防止 Executor 無限循環執行)
+  if ((state.executor_turn_count ?? 0) >= 5) {
+    return "reporter";
+  }
+
+  return "executor";
+}
+
+/**
+ * 步驟斷言後的條件路由：通過則推進，失敗則補救或在超限後中斷。
+ */
+export function routeAfterAssertion(state: {
+  step_assertion_result: "PASS" | "FAIL" | null;
+  step_retry_count: number;
+}): "step_tracker" | "executor" | "reporter" {
+  if (state.step_assertion_result === "PASS") {
     return "step_tracker";
   }
 
-  // 檢查單步重試次數是否超限 (上限 5 次)
   if (state.step_retry_count >= 5) {
     return "reporter";
   }
@@ -42,4 +60,3 @@ export function routeNextStep(state: {
   }
   return "reporter";
 }
-

@@ -25,7 +25,7 @@
   - `init` -> `executor`
   - `executor` -> (透過 `routeAfterExecution`)：
     - 若上一動作包含 `done_acting` -> 流轉至 `step_asserter`。
-    - 若重試次數超限 -> 流轉至 `reporter`。
+    - 若 `executor_turn_count` 超限 (>= 5) -> 流轉至 `reporter`（防 Executor 無限動作循環）。
     - 其餘情況（工具執行後需繼續操作）-> 自循環回 `executor`。
   - `step_asserter` -> (透過新條件路由 `routeAfterAssertion`)：
     - 斷言成功（或步驟無 `stepExpected`）-> 流轉至 `step_tracker` 推進步驟。
@@ -49,8 +49,9 @@
 - 當斷言失敗時，`step_asserterNode` 將產生一筆失敗日誌：
   - `action`: `assert_failure`
   - `result`: `斷言未通過：[具體原因]`
-- 將 `step_retry_count` 遞增，並重新路由至 `executorNode`。
+- 將 `step_retry_count` 遞增（**僅由 `stepAsserterNode` 於 FAIL 時遞增，Executor 不再觸及**），並重新路由至 `executorNode`。
 - `executorNode` 的 `Execution History for the Current Step` 機制會將此失敗日誌呈現給模型，使 Agent 知道：「上一個動作雖然自認完成，但預期結果『${stepExpected}』尚未出現」，從而採取重試、重新點擊或等待操作。
+- **計數器職責分離**：`executor_turn_count` 專門計算 Executor 尚未宣告 `done_acting` 前的動作輪次（每次 Executor 執行 +1），上限 5 次，超限導向 `reporter`，防止無限動作循環；`step_retry_count` 專門計算斷言失敗重試次數，上限 5 次，超限導向 `reporter`，防止無限補救循環。兩者在步驟推進（`step_tracker`）時各自歸零。
 
 ### 4. 重放模式（Replay Mode）的天然適配
 - 在重放模式下，Executor 依序重放動作並發出 `done_acting`。
@@ -67,4 +68,4 @@
 - **[Risk] 使用者輸入的預期結果過於主觀（例如「畫面看起來很舒服」）**
   - → *Mitigation*：Asserter prompt 要求模型僅依可觀察證據說明 PASS/FAIL 理由；無法由頁面證據支持時不得臆測通過。
 - **[Risk] 模型在重試迴圈中反覆嘗試無效操作**
-  - → *Mitigation*：延用專案既有的 `step_retry_count >= 5` 安全上限，超限時強制中斷並交由 `reporterNode` 產出失敗診斷。
+  - → *Mitigation*：拆分為兩道獨立防線——`executor_turn_count >= 5` 防止 Executor 單次補救中無限動作（每輪 +1，`done_acting` 後由 `stepAsserter` 歸零），`step_retry_count >= 5` 防止斷言失敗無限重試（僅由 `stepAsserter` 於 FAIL 時 +1，步驟推進時歸零）。兩者均超限時強制中斷並交由 `reporterNode` 產出失敗診斷。

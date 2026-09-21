@@ -335,6 +335,7 @@ export class TaskQueue {
         expected: interpolatedExpected,
         system_prompt: interpolatedSystemPrompt,
         current_step_idx: 0,
+        executor_turn_count: 0,
         step_retry_count: 0,
         reports_dir: "",
         screenshots_paths: [],

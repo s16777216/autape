@@ -1,4 +1,3 @@
-import { z } from "zod";
 import { StateGraph, START, END } from "@langchain/langgraph";
 import {
   BaseMessage,
@@ -16,22 +15,24 @@ import { TestRunStep } from "./entities/TestRunStep.js";
 import {
   buildExecutorSystemPrompt,
   buildFailureSummarizerSystemPrompt,
+  buildStepAsserterPrompt,
+  StepAssertionSchema,
 } from "./graph/prompt.js";
-import { routeAfterExecution, routeNextStep } from "./graph/router.js";
+import {
+  routeAfterAssertion,
+  routeAfterExecution,
+  routeNextStep,
+} from "./graph/router.js";
 import { getSettings } from "./services/settingsService.js";
-import { getExecutorModel, getSummarizerModel } from "./services/llmFactory.js";
+import {
+  getExecutorModel,
+  getStepAsserterModel,
+  getSummarizerModel,
+} from "./services/llmFactory.js";
 import { AppDataSource as _AppDS } from "./db.js";
 import { ModelSetting } from "./entities/ModelSetting.js";
 import { Runnable } from "@langchain/core/runnables";
 import { ClientTool, DynamicStructuredToolInput } from "@langchain/core/tools";
-
-// 定義結構化視覺斷言 Zod Schema
-const AssertionResultSchema = z.object({
-  result: z
-    .enum(["PASS", "FAIL"])
-    .describe("判定結果，必須為 'PASS' 或 'FAIL'"),
-  reason: z.string().describe("詳細的判斷理由與分析說明"),
-});
 
 function parseContentToString(content: any): string {
   if (typeof content === "string") {
@@ -49,6 +50,86 @@ function parseContentToString(content: any): string {
   }
   return "";
 }
+
+type StepAssertion = {
+  result: "PASS" | "FAIL";
+  reason: string;
+};
+
+function parseJsonText(text: string): unknown {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return JSON.parse(fenced ? fenced[1] : trimmed);
+}
+
+/**
+ * 解析不同供應商／代理層可能產生的 structured-output response shape。
+ */
+export function parseStepAssertionResponse(response: any): StepAssertion {
+  const candidates: unknown[] = [];
+
+  if (response?.parsed != null) {
+    candidates.push(response.parsed);
+  }
+
+  const raw = response?.raw ?? response;
+  if (Array.isArray(raw?.tool_calls)) {
+    for (const toolCall of raw.tool_calls) {
+      if (toolCall?.args != null) candidates.push(toolCall.args);
+    }
+  }
+
+  const providerToolCalls = raw?.additional_kwargs?.tool_calls;
+  if (Array.isArray(providerToolCalls)) {
+    for (const toolCall of providerToolCalls) {
+      const args = toolCall?.function?.arguments;
+      if (typeof args === "string") {
+        try {
+          candidates.push(parseJsonText(args));
+        } catch {
+          // 留給下方統一錯誤處理。
+        }
+      } else if (args != null) {
+        candidates.push(args);
+      }
+    }
+  }
+
+  const content = parseContentToString(raw?.content);
+  if (content.trim()) {
+    try {
+      candidates.push(parseJsonText(content));
+    } catch {
+      // 純文字不是合法 JSON 時，留給下方統一錯誤處理。
+    }
+  }
+
+  for (const candidate of candidates) {
+    const parsed = StepAssertionSchema.safeParse(candidate);
+    if (parsed.success) return parsed.data;
+  }
+
+  throw new Error(
+    "模型未回傳可解析的步驟斷言；預期包含 result (PASS/FAIL) 與 reason。",
+  );
+}
+
+function serializeStepAssertionRawResponse(response: any): string {
+  const raw = response?.raw ?? response;
+  if (raw == null) return "";
+
+  try {
+    return JSON.stringify({
+      content: raw.content,
+      tool_calls: raw.tool_calls,
+      additional_kwargs: raw.additional_kwargs,
+      response_metadata: raw.response_metadata,
+    }).slice(0, 8000);
+  } catch {
+    return String(raw).slice(0, 8000);
+  }
+}
+
 export interface ParsedToolAction {
   name: string;
   args: Record<string, unknown>;
@@ -95,6 +176,7 @@ export class E2EGraphBuilder {
   private browserToolsInstance: BrowserTools;
   private tools: ClientTool[];
   private model!: Runnable;
+  private asserter_model!: Runnable;
   private summarizer_model?: Runnable;
   private executorModelSetting!: ModelSetting;
   private reportModelSetting?: ModelSetting;
@@ -132,6 +214,7 @@ export class E2EGraphBuilder {
       }
       instance.executorModelSetting = executorModel;
       instance.model = getExecutorModel(executorModel, instance.tools);
+      instance.asserter_model = getStepAsserterModel(executorModel);
 
       // 報告器模型：未設定或不存在則 skip（不拋錯）
       if (aiConfig.reportModelId) {
@@ -159,10 +242,13 @@ export class E2EGraphBuilder {
   /**
    * 初始化節點：將索引與狀態歸零
    */
-  async initNode(state: typeof TestState.State) {
+async initNode(state: typeof TestState.State) {
     return {
       current_step_idx: 0,
+      executor_turn_count: 0,
       step_retry_count: 0,
+      step_assertion_result: null,
+      step_assertion_reason: "",
       screenshots_paths: [],
       logs: [],
     };
@@ -352,23 +438,24 @@ export class E2EGraphBuilder {
 
         if (replaySuccess) {
           console.log(
-            `[Replay] 步驟 ${idx + 1} 重放成功完成（0 Token 消耗）！推進至 stepTrackerNode...`,
+            `[Replay] 步驟 ${idx + 1} 工具重放成功完成（工具重放為 0 Token）！推進至 stepAsserterNode...`,
           );
-          // 4.2 若重放順利執行完包含 done_acting 的所有工具，生成 0 Token 消耗日誌，推進至 stepTrackerNode
+// 若重放順利執行完包含 done_acting 的所有工具，條件路由會推進至 stepAsserterNode
           return {
             logs: [...(state.logs || []), ...replayLogs],
+            executor_turn_count: 0,
             step_retry_count: 0,
           };
         } else {
           // 4.1 重放失敗交棒處理：
           // 1. 清除當前步驟在重放期間寫入的臨時暫存日誌 (replayLogs 不併入 state.logs)
           // 2. 保留瀏覽器當前操作現場 (不關閉、不重整)
-          // 3. 重設 step_retry_count = 0，給予 LLM 完整的重試容錯空間
+          // 3. 重設 executor_turn_count = 0，給予 LLM 完整的動作輪次容錯空間
           // 4. 重新呼叫 observeWebPage() 擷取最新畫面與元素清單，無縫交棒至一般的 LLM Executor 推導
           console.warn(
             `[Replay] 步驟 ${idx + 1} 重放中斷/失敗：${replayFailureReason}。正在交棒啟動 LLM 自我修復 (Self-healing)...`,
           );
-          state.step_retry_count = 0;
+          state.executor_turn_count = 0;
         }
       }
     }
@@ -393,14 +480,11 @@ export class E2EGraphBuilder {
       ? this.browserManager.page.url()
       : "";
 
-    const step_expected = state.step_expecteds[idx] || "";
-
     // 2. 建構系統 Prompt
     const system_prompt = buildExecutorSystemPrompt({
       testName: state.test_name,
       stepIdx: idx,
       stepContent: step_content,
-      stepExpected: step_expected,
       currentUrl: current_url,
       systemPrompt: state.system_prompt,
     });
@@ -459,7 +543,7 @@ export class E2EGraphBuilder {
       });
       return {
         logs,
-        step_retry_count: state.step_retry_count + 1,
+        executor_turn_count: (state.executor_turn_count ?? 0) + 1,
         last_screenshot: screenshot_base64,
         simplified_dom: element_list,
       };
@@ -508,10 +592,137 @@ export class E2EGraphBuilder {
 
     return {
       logs,
-      step_retry_count: state.step_retry_count + 1,
+      executor_turn_count: (state.executor_turn_count ?? 0) + 1,
       last_screenshot: screenshot_base64,
       simplified_dom: element_list,
     };
+  }
+
+  /**
+   * 獨立步驟斷言節點：所有非空 expected 一律交由模型結合 DOM 與畫面判定。
+   */
+  async stepAsserterNode(state: typeof TestState.State) {
+    const idx = state.current_step_idx;
+    const stepContent = state.steps[idx];
+    const stepExpected = (state.step_expecteds[idx] || "").trim();
+    const logs = [...(state.logs || [])];
+
+    if (!stepExpected) {
+      const reason = "此步驟未設定預期結果，略過模型斷言。";
+      logs.push({
+        step_idx: idx,
+        step_description: stepContent,
+        action: "assert_skipped",
+        result: reason,
+        timestamp: new Date().toISOString(),
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      });
+      return {
+        logs,
+        step_assertion_result: "PASS" as const,
+        step_assertion_reason: reason,
+      };
+    }
+
+    let simplifiedDom: string;
+    try {
+      simplifiedDom = await this.browserManager.getSimplifiedDOM();
+    } catch (error: unknown) {
+      simplifiedDom = `<!-- 無法提取 DOM 資訊：${error instanceof Error ? error.message : String(error)} -->`;
+    }
+
+    let screenshotBase64: string | null = null;
+    try {
+      screenshotBase64 = await this.browserManager.getPageScreenshotBase64();
+    } catch {
+      // 保留 DOM-only 證據，並由模型依證據是否充分做出判定。
+    }
+
+    const systemPrompt = buildStepAsserterPrompt({
+      testName: state.test_name,
+      stepIdx: idx,
+      stepContent,
+      stepExpected,
+    });
+    const evidenceContent: any[] = [
+      {
+        type: "text",
+        text: `以下是目前頁面的精簡 DOM 證據：\n\n${simplifiedDom}`,
+      },
+    ];
+    if (screenshotBase64) {
+      evidenceContent.unshift({
+        type: "image_url",
+        image_url: { url: `data:image/png;base64,${screenshotBase64}` },
+      });
+    }
+
+    let response: any;
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let totalTokens = 0;
+    try {
+      response = await this.asserter_model.invoke([
+        new SystemMessage(systemPrompt),
+        new HumanMessage({ content: evidenceContent }),
+      ]);
+      const raw = response.raw ?? response;
+      promptTokens = raw.usage_metadata?.input_tokens ?? 0;
+      completionTokens = raw.usage_metadata?.output_tokens ?? 0;
+      totalTokens = raw.usage_metadata?.total_tokens ?? 0;
+      const assertion = parseStepAssertionResponse(response);
+      const passed = assertion.result === "PASS";
+
+      logs.push({
+        step_idx: idx,
+        step_description: stepContent,
+        action: passed ? "assert_pass" : "assert_failure",
+        result: passed
+          ? `斷言通過：${assertion.reason}`
+          : `斷言未通過：${assertion.reason}`,
+        ai_response: JSON.stringify(assertion),
+        timestamp: new Date().toISOString(),
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: totalTokens,
+      });
+
+return {
+        logs,
+        last_screenshot: screenshotBase64 ?? state.last_screenshot,
+        simplified_dom: simplifiedDom,
+        step_assertion_result: assertion.result,
+        step_assertion_reason: assertion.reason,
+        executor_turn_count: 0,
+        step_retry_count: passed
+          ? state.step_retry_count
+          : (state.step_retry_count ?? 0) + 1,
+      };
+    } catch (error: unknown) {
+      const reason = `模型斷言執行失敗：${error instanceof Error ? error.message : String(error)}`;
+      logs.push({
+        step_idx: idx,
+        step_description: stepContent,
+        action: "assert_failure",
+        result: `斷言未通過：${reason}`,
+        ai_response: serializeStepAssertionRawResponse(response),
+        timestamp: new Date().toISOString(),
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: totalTokens,
+      });
+return {
+        logs,
+        last_screenshot: screenshotBase64 ?? state.last_screenshot,
+        simplified_dom: simplifiedDom,
+        step_assertion_result: "FAIL" as const,
+        step_assertion_reason: reason,
+        executor_turn_count: 0,
+        step_retry_count: (state.step_retry_count ?? 0) + 1,
+      };
+    }
   }
 
   /**
@@ -627,6 +838,7 @@ export class E2EGraphBuilder {
 
     return {
       current_step_idx: idx + 1,
+      executor_turn_count: 0,
       step_retry_count: 0,
     };
   }
@@ -882,6 +1094,7 @@ export class E2EGraphBuilder {
       // 加入節點
       .addNode("init", this.initNode.bind(this))
       .addNode("executor", this.executorNode.bind(this))
+      .addNode("step_asserter", this.stepAsserterNode.bind(this))
       .addNode("step_tracker", this.stepTrackerNode.bind(this))
       .addNode("reporter", this.reporterNode.bind(this))
 
@@ -891,6 +1104,13 @@ export class E2EGraphBuilder {
 
       // 執行後的條件邊
       .addConditionalEdges("executor", routeAfterExecution as any, {
+        executor: "executor",
+        step_asserter: "step_asserter",
+        reporter: "reporter",
+      })
+
+      // 斷言後的條件邊
+      .addConditionalEdges("step_asserter", routeAfterAssertion as any, {
         executor: "executor",
         step_tracker: "step_tracker",
         reporter: "reporter",

@@ -22,9 +22,12 @@ export const TestState = Annotation.Root({
   step_expecteds: Annotation<string[]>(),
   expected: Annotation<string>(),
   
-  // 執行過程狀態
+// 執行過程狀態
   current_step_idx: Annotation<number>(),
-  step_retry_count: Annotation<number>(),
+  executor_turn_count: Annotation<number>(),  // 動作輪次計數（executor 尚未宣告完成前的執行次數）
+  step_retry_count: Annotation<number>(),     // 斷言重試計數（step_asserter 判定 FAIL 後的重試次數）
+  step_assertion_result: Annotation<"PASS" | "FAIL" | null>(),
+  step_assertion_reason: Annotation<string>(),
   last_screenshot: Annotation<string | null>(),   // base64 字串，用以傳給 Gemini 多模態
   simplified_dom: Annotation<string>(),          // 簡化過濾後的 DOM 文字
   

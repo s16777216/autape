@@ -97,8 +97,8 @@ describe("歷史軌跡重放 (Replay Mode) 單元測試", () => {
     });
   });
 
-  describe("重放日誌推進至步驟追蹤 (routeAfterExecution)", () => {
-    it("重放執行完畢包含 done_acting 應推進至 step_tracker", () => {
+  describe("重放日誌推進至步驟斷言 (routeAfterExecution)", () => {
+    it("重放執行完畢包含 done_acting 應推進至 step_asserter", () => {
       const logs: LogEntry[] = [
         {
           step_idx: 0,
@@ -134,12 +134,12 @@ describe("歷史軌跡重放 (Replay Mode) 單元測試", () => {
 
       const route = routeAfterExecution({
         logs,
-        step_retry_count: 0,
+        executor_turn_count: 0,
         current_step_idx: 0,
         step_expecteds: [],
       });
 
-      expect(route).toBe("step_tracker");
+      expect(route).toBe("step_asserter");
     });
   });
 
@@ -183,8 +183,8 @@ describe("歷史軌跡重放 (Replay Mode) 單元測試", () => {
   });
 
   describe("自我修復交棒與暫存清理機制 (Self-healing Handover)", () => {
-    it("重放過程中發生錯誤時，暫存日誌應被拋棄且 step_retry_count 歸零", () => {
-      let step_retry_count = 3;
+    it("重放過程中發生錯誤時，暫存日誌應被拋棄且 executor_turn_count 歸零", () => {
+      let executor_turn_count = 3;
       let logs: LogEntry[] = [];
       const replayLogs: LogEntry[] = [
         {
@@ -204,12 +204,12 @@ describe("歷史軌跡重放 (Replay Mode) 單元測試", () => {
       if (replaySuccess) {
         logs = [...logs, ...replayLogs];
       } else {
-        // 交棒邏輯：拋棄 replayLogs，重設 retry 次數
-        step_retry_count = 0;
+        // 交棒邏輯：拋棄 replayLogs，重設動作輪次
+        executor_turn_count = 0;
       }
 
       expect(logs).toHaveLength(0); // 暫存日誌未寫入 state.logs
-      expect(step_retry_count).toBe(0); // 重試次數歸零，賦予 LLM 完整容錯次數
+      expect(executor_turn_count).toBe(0); // 動作輪次歸零，賦予 LLM 完整執行空間
     });
 
     it("重放成功時所有日誌的 Token 消耗應全部為 0", () => {

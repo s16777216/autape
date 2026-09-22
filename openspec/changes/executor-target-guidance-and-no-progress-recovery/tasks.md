@@ -1,36 +1,57 @@
-## 1. Step Objective 目標提示
+## 0. 相依契約確認
 
-- [ ] 1.1 於 `backend/src/graph/prompt.ts` 的 `buildExecutorSystemPrompt` 新增選用參數 `stepObjective`：非空時注入「Step Objective」區塊（原始全文、僅供動作導向、不得自行判定 PASS/FAIL），超過 500 字元時截斷並標註「(已截斷)」，且不針對內容做格式特徵解析；以 `npm run test -w backend` 的 `graph.test.ts` 驗證輸出內容
-- [ ] 1.2 於 `backend/src/graph.ts` 的 `executorNode` 讀取 `state.step_expecteds?.[idx]` 並傳入 `buildExecutorSystemPrompt`；以新增單元測試驗證傳遞邏輯
-- [ ] 1.3 擴充 `backend/tests/graph.test.ts`：涵蓋「objective 非空（短文本）」「objective 超 500 字元截斷」「objective 為空」三種 prompt 輸出情境
-- [ ] 1.4 擴充 `backend/tests/graph.test.ts`：驗證 Objective 區塊含「不得追加翻轉失敗狀態之動作（NO OVER-CORRECTION）」規則文字
+- [ ] 0.1 確認 `assertion-failure-classification` 已提供 `step_assertion_failure_type` state，並以 `graph.test.ts` 驗證缺少分類時仍預設為 `operational`
+- [ ] 0.2 確認 `routeAfterAssertion` 已實作 PASS → `step_tracker`、business FAIL → `reporter`、operational FAIL 依剩餘 Executor round 預算分流，並以 router 單元測試覆蓋所有分支
 
-## 2. No-Progress Recovery
+## 1. Step Objective 權限與訊息層級
 
-- [ ] 2.1 新增 `backend/src/graph/noProgress.ts`，匯出純函數 `shouldFlagNoProgress`（三分支：單輪全失敗／動作完全重複／步驟累計 ≥6 筆且未 done_acting）；以純函數單元測試驗證三個分支與「正常進展不觸發」
-- [ ] 2.2 於 `backend/src/graph.ts` `executorNode` 每輪工具執行完畢後（return 前）計算前一輪最後動作與當前輪資料並呼叫偵測，命中時 push `strategy_hint` 日誌（建議內容依無進展原因配對、併帶剩餘回合數）；以單元測試驗證日誌內容與不變更路由
-- [ ] 2.3 新增 `backend/tests/graph.test.ts` 或獨立測試檔，驗證 `strategy_hint` 日誌會進入下一輪 Execution History 所需之 `logs` 結構
+- [ ] 1.1 更新 `backend/src/graph/prompt.ts` 的固定 System 規則，明訂 `Step Action > Step Objective`、Objective 不得改寫 Action／輸入值／追加操作或自行判定 PASS/FAIL，並以 prompt snapshot/string assertions 驗證
+- [ ] 1.2 實作 Objective normalize 與 Unicode 截斷：空白內容視為不存在，超過 500 字元時保留前 350、後 150 並加入省略標記；以中英文及 surrogate-pair 測試驗證邊界
+- [ ] 1.3 更新 `backend/src/graph.ts` 的 `executorNode`，從 `state.step_expecteds[idx]` 取得 Objective 並只放入 Human message 的資料區塊；以 mocked model messages 驗證 Objective 不出現在 System message
+- [ ] 1.4 擴充 `backend/tests/graph.test.ts`，覆蓋 Action/Objective 衝突、短 Objective、長 Objective、空 Objective 與 URL-like Objective，驗證不做內容特徵解析
 
-## 3. 回合意識與優雅收斂
+## 2. 保守的 No-Progress Recovery
 
-- [ ] 3.1 於 `executorNode` 的 Human message 附加「本步驟已使用回合 X / 上限 5」，並在 `executor_turn_count >= 4`（最後一輪）追加「若無法推進目標請立即呼叫 done_acting 交由驗證器判定」；以新增單元測試驗證 Human message 內容分支
-- [ ] 3.2 依設計在 System Prompt 追加「多次嘗試無法前進時應改變策略或呼叫 done_acting」規則；以 prompt 輸出測試驗證
+- [ ] 2.1 新增 `backend/src/graph/noProgress.ts`，定義 `all_tools_failed | repeated_side_effect` reason 與 recursive key-sorted argument canonicalization；以純函數測試驗證不同 JSON key 順序得到相同結果
+- [ ] 2.2 實作 `all_tools_failed`：要求本輪至少一個工具且全部符合 `isToolExecutionFailed`；以空工具輪、全失敗、部分成功及全成功測試驗證
+- [ ] 2.3 實作 `repeated_side_effect`：只比較 `navigate_to`、`click`、`input`、`key`、`hover`、`execute_javascript`，排除 observe、wait、done 及合成日誌；以相鄰回合及中間成功動作測試驗證
+- [ ] 2.4 固定同輪原因優先序 `all_tools_failed > repeated_side_effect`，並以同時命中測試驗證只回傳一個 reason
+- [ ] 2.5 在 `executorNode` 整合 `strategy_hint`：每輪最多一筆、相同 reason 不連續重複、持久化至 logs 並進入下一輪 Execution History；以 state/log 測試驗證
+- [ ] 2.6 驗證 `strategy_hint`、assertion log 與其他合成日誌不參與失敗判定、回合預算、動作數量或重複比較，並以回歸測試防止提示自我觸發
+- [ ] 2.7 為所有 BrowserTools 成功與錯誤結果補齊 `isToolExecutionFailed` 契約測試，確認錯誤文字包含「失敗」或以「錯誤」開頭，且 Replay 與 No-Progress 使用同一判定結果
 
-## 4. 工具回饋強化
+## 3. 共用回合預算與 Terminal Tool
 
-- [ ] 4.1 於 `backend/src/tools.ts` `click` 的 `waitForNavigation` 成功回報補上 `page.url()`（「導航後網址: ...」）；以新增測試或手動執行驗證
-- [ ] 4.2 於 `backend/src/browser.ts` `observeWebPage` 元素清單對 `<a>` 附加 `href`（相對路徑以 `new URL(href, location.href)` 轉絕對）；以 browser 相關測試驗證清單格式
-- [ ] 4.3 確認前端 log 串流渲染對新 `strategy_hint` action 值相容（檢查 `frontend/src/views` log 解析是否有依 action 值分支）；驗證方式：查閱前端程式碼 + 前後端連動手動驗證
+- [ ] 3.1 修改 `stepAsserterNode`，使 PASS/FAIL/例外分支均不重設 `executor_turn_count`；以 operational retry 測試驗證已使用回合會保留
+- [ ] 3.2 確認只有 `initNode` 與成功推進下一步的 `stepTrackerNode` 重設 Executor round，並以跨步驟測試驗證每個新步驟從 0 開始
+- [ ] 3.3 在 Executor Human message 顯示「已使用 X／上限 5／剩餘 R」，最後一輪加入收斂指示；以首輪、中間輪及第 5 輪 message 測試驗證
+- [ ] 3.4 修改 Executor 工具迴圈，使 `done_acting` 成為 terminal tool：記錄該 call 後立即停止且不執行同批後續工具；以 spy tools 驗證後續副作用為零
+- [ ] 3.5 修改 `routeAfterExecution` 以本輪明確 done 訊號優先於預算耗盡判斷，不再依賴全域最後一筆 log；以第 5 輪 done、done 後合成日誌及無 done 超限測試驗證
+- [ ] 3.6 擴充整合型 graph tests，驗證一次 LLM 決策無論產生多少工具都只增加一輪，Replay、Asserter 與框架處理不增加回合
 
-## 5. 報告診斷強化
+## 4. 可靠導航、連結資訊與新分頁護欄
 
-- [ ] 5.1 於 `backend/src/graph.ts` `reporterNode` 在「因動作輪次／斷言重試上限」而失敗時，`finalReason` 附加該步驟最後 5 筆動作摘錄（每筆 100 字元）；以單元測試或資料庫查詢驗證 reason 內容
-- [ ] 5.2 檢查 `system_setting` 是否設定 `reportModelId`（未設定則無法生成 `failureSummary`）；若未設定，於執行案例前提醒使用者補齊，不改動規格禁令
+- [ ] 4.1 重構 `backend/src/tools.ts` 的 `click(waitForNavigation)`：點擊前保存原 URL 並註冊同頁 URL/navigation watcher，支援 document navigation 與 SPA URL change；以固定 Playwright 測試頁驗證兩條成功路徑及回報 URL
+- [ ] 4.2 實作導航逾時結果，確保符合 `isToolExecutionFailed` 契約並包含當前 URL；以未導航按鈕測試驗證不會誤報成功
+- [ ] 4.3 點擊前註冊 popup watcher；命中時回傳穩定的 `unsupported_new_page` marker 與 popup URL，並由 Executor 設定同名 `termination_cause`、停止重試及路由至 reporter；以 `target=_blank` 測試驗證只點擊一次
+- [ ] 4.4 更新 `backend/src/browser.ts` 的 anchor 表示，輸出 `hrefRaw`、resolved `href` 與 `navigable`；以相對 URL、HTTP(S)、fragment、mailto、tel、javascript、data 與 blob 測試驗證只有 HTTP(S) 可直接導航
+- [ ] 4.5 執行工具層回歸測試，確認無 `waitStrategy` 與 `waitForText` 的既有 click 行為不受 navigation watcher 影響
 
-## 6. 整合驗證
+## 5. 結構化且安全的失敗診斷
 
-- [ ] 6.1 執行 `npm test -w backend`（vitest）全數通過且既有 `replay.test.ts`／`graph.test.ts` 不因變更而回歸
-- [ ] 6.2 使用同一 `https://example.com` 測試案例（run 於 Queue）手動重跑 2-3 次，確認步驟 1 不再卡死（預期：執行器直接導航至目標或點對後 `done_acting`）
-- [ ] 6.3 建立一個非 URL 預期案例（如點擊加入購物車後預期「購物車圖示出現」）手動重跑，驗證 Step Objective 與 No-Progress 對非 URL 目標的通用性
-- [ ] 6.4 資料庫核對：查 `test_log`／`test_run_step` 確認 `strategy_hint` 日誌、導航後 URL 回報、`finalReason` 摘要均正確落庫
-- [ ] 6.5 將已評估但本次不實作的工具陷阱（`target=_blank` 新分頁不被 `waitForNavigation` 偵測、`Promise.all([waitForLoadState, click])` 未真正等待新導航）記錄為後續 change 主題
+- [ ] 5.1 在 `backend/src/state.ts` 新增並於 init 初始化 `termination_cause`，至少支援 `business_assertion_failure`、`operational_budget_exhausted`、`executor_budget_exhausted`、`unsupported_new_page`；以型別與 state 初始化測試驗證
+- [ ] 5.2 在各 reporter 前置路由設定正確 `termination_cause`，並以 business、operational budget、executor budget 與 popup 測試驗證原因不靠計數器倒推
+- [ ] 5.3 新增 Reporter 動作摘要 sanitizer，只保留工具名、非敏感 ID、HTTP(S) URL 與成敗狀態，排除 synthetic logs；以最近 5 個真實工具動作的單元測試驗證排序與上限
+- [ ] 5.4 擴充 sanitizer 測試，確認 `input.text`、按鍵內容、JavaScript、cookie、token、authorization 及憑證原值不會出現在輸出
+- [ ] 5.5 更新 `reporterNode` 依 `termination_cause` 組裝 `finalReason`：business 保留 Asserter reason，預算耗盡附安全動作摘要，popup 附 URL；以各分支單元測試及資料庫 mapping 測試驗證
+- [ ] 5.6 確認 `strategy_hint` 與 assertion reason 以診斷區段呈現、不混算為最近動作，並以輸出字串測試驗證
+
+## 6. 整合驗收
+
+- [ ] 6.1 執行 `npm test -w backend`，確認新增測試及既有 `graph.test.ts`、`replay.test.ts`、router 與 BrowserTools 測試全部通過
+- [ ] 6.2 查核前端 TestLog/SSE 自由文字渲染並進行前後端連動測試，確認未知 `strategy_hint` action 能正常顯示且不誤標為 pending/error
+- [ ] 6.3 使用固定 URL 目標案例連跑 3 次，確認 3/3 成功、每步不超過 5 個 Executor rounds，且 hard/SPA 導航後 URL 均正確落入日誌
+- [ ] 6.4 使用固定非 URL Objective 案例連跑 3 次，確認 3/3 成功且 Executor 未為迎合 Objective 改寫 Step Action
+- [ ] 6.5 執行 business failure 案例，確認 Asserter FAIL 後零 Executor 工具呼叫、`termination_cause` 正確、`finalReason` 保留斷言理由且無敏感值
+- [ ] 6.6 執行 operational failure 與 popup 案例，確認共用回合不重置、預算耗盡或 `unsupported_new_page` 正確收斂，且不重複開啟分頁
+- [ ] 6.7 核對 `test_log`／`test_run_step`／`test_run`，確認 strategy hint、導航 URL、分類式終止 reason 與遮蔽動作摘要正確持久化；同時檢查 `reportModelId` 設定但不改變未設定時跳過 failure summary 的既有規則

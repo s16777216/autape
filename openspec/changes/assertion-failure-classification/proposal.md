@@ -1,16 +1,18 @@
 ## Why
 
-斷言失敗（`step_asserter` 判定 FAIL）導回 `executor` 重試時，失敗回饋會以模型產生的自然語言原文（`step_assertion_reason`）混入該步驟的 Execution History，且與動作結果共用同一個「Result/Feedback」欄位。執行器無從分辨「動作未完成、該補救」與「動作已完成但結果與預期不符、該收手」這兩種本質不同的失敗——於是傾向將任何 FAIL 解讀為「任務沒做完」，追加動作企圖讓畫面符合預期，導致「應該失敗的案例被修正成成功」的過度修正問題。
+斷言失敗（`step_asserter` 判定 FAIL）目前一律導回 Executor，且自然語言失敗理由與動作結果共用同一個 Execution History 欄位。Executor 無法可靠分辨「動作未完成、可補救」與「動作已完成但結果不符、必須收手」，因此可能追加操作把本應保留的業務失敗狀態修正成成功。
 
-此外，`separate-action-and-assertion`（2026-09-11）的提案已點出「操作性失敗 vs 業務性斷言失敗」的錯誤歸因需求，但至今只在語言層提及，未落地為可程式判讀的訊號。
+僅以提示文字要求 Executor 收手仍會產生一次沒有新證據的回流，並可能重複 `done_acting → business FAIL → executor`。系統需要可程式判讀的失敗分類及明確路由，讓是否補救由失敗本質與剩餘動作預算決定。
 
 ## What Changes
 
-- **斷言失敗分類欄位**：`StepAssertionSchema` 新增 `failure_type` 欄位（`business` | `operational`），並於 `buildStepAsserterPrompt` 明確要求模型在 FAIL 時一併標記分類（保持純模型語意，不引入本地字串解析）。
-  - `business`：動作已完成，但頁面結果與 `stepExpected` 不符（預期的失敗型結果或業務性落差）——執行器應收手，不得追加動作翻轉失敗狀態。
-  - `operational`：動作可能未完成或執行的操作層障礙（如元素動態變化、等待失效）——執行器可重新觀察/補救。
-- **Execution History 語意分流**：`executorNode` 組裝該步驟 Execution History 時，將 `assert_failure` 回饋依 `failure_type` 分流語意——`business` 附加「此為步驟預期結果未被滿足之失敗，完成要求的動作後請直接呼叫 `done_acting`，不得追加以改變失敗狀態」；`operational` 維持「動作可能未完成，可重新觀察或補救」。
-- **展示與診斷**：`failure_type` 寫入 `step_assertion_reason` 對應的 log，供報告與除錯引用，不改變既有 PASS/FAIL 路由與重試計數。
+- **斷言失敗分類**：`StepAssertionSchema` 在 FAIL 時提供 `failure_type: business | operational`。`business` 表示動作已完成但頁面結果與 `stepExpected` 不符；`operational` 表示動作可能未完成或存在操作層障礙。分類由 Asserter 模型基於頁面證據產生，不使用本地字串規則。
+- **相容性預設**：模型缺少分類、舊供應商 response 未帶欄位或解析例外時，系統以 `operational` 處理，避免因資訊不足而提早終止可補救流程。
+- **明確 state propagation**：`step_assertion_failure_type` 成為 LangGraph 執行 state 的必要欄位；PASS 時清空，FAIL 時保存解析後分類。`assert_failure` log 同時保留分類與 Asserter 原始理由供診斷。
+- **分類式路由**：`PASS` 進入 `step_tracker`；`business` FAIL 直接進入 `reporter` 且不得再呼叫 Executor；`operational` FAIL 只有在仍有 Executor round 預算時才返回 Executor，預算耗盡則進入 reporter。
+- **Assertion 終止原因**：路由為終止分支設定 `business_assertion_failure` 或 `operational_budget_exhausted`，使 Reporter 不需從計數器或 log 文字倒推原因。
+
+本 change 是 `executor-target-guidance-and-no-progress-recovery` 的先行依賴：本 change 擁有分類、state propagation 與 `routeAfterAssertion` 分流；後續 change 擁有 Step Objective、No-Progress、共用回合提示、terminal `done_acting`、導航回饋及完整 Reporter 摘要。
 
 ## Capabilities
 
@@ -20,15 +22,12 @@
 
 ### Modified Capabilities
 
-- `e2e-runner`: 修改步驟斷言（step_asserter）失敗回饋的行為規範—— FAIL 結果新增結構化分類（business/operational），並規範 executor 的 Execution History 依分類分流語氣，使「失敗型預期未滿足」不再被執行器嘗試修正成成功。
+- `e2e-runner`: 步驟斷言 FAIL 新增結構化 business/operational 分類，並依分類與剩餘 Executor round 預算決定立即失敗或返回補救；business failure 後不得再有 Executor 工具呼叫。
 
 ## Impact
 
-- **後端核心 (`backend/src/graph.ts`)**：
-  - `stepAsserterNode`：讀取模型回傳之 `failure_type`，於 `step_assertion_reason` log 中保留分類資訊。
-  - `executorNode`：組裝該步驟 Execution History 時依 `failure_type` 分流 `assert_failure` 回饋語意。
-- **提示詞體系 (`backend/src/graph/prompt.ts`)**：
-  - `StepAssertionSchema` 新增 `failure_type` 欄位與 zod 定義。
-  - `buildStepAsserterPrompt` 增加分類指示與對應規則。
-- **執行狀態 (`backend/src/state.ts`)**：若不透傳 `failure_type` 至 state，則維持既有欄位；分類僅存在於 log 語意與 `step_assertion_reason` 推導——實作時確認最小改動面。
-- **相容性保證**：不變更 PASS/FAIL 判定、不變更 `routeAfterAssertion` 路由、不變更 `executor_turn_count`/`step_retry_count` 計數、不變更前端 UI 與資料庫 Schema。舊日誌（無 `failure_type`）以 `operational` 預設處理，行為與現行一致。
+- **提示與解析 (`backend/src/graph/prompt.ts`, `backend/src/graph.ts`)**：擴充 `StepAssertionSchema`、Asserter prompt、response parser 與 assertion log；缺欄位時預設 operational。
+- **執行 state (`backend/src/state.ts`)**：新增並初始化 `step_assertion_failure_type`；建立 assertion 相關的 `termination_cause` 值，後續 change 再擴充其他終止原因。
+- **路由 (`backend/src/graph/router.ts`)**：`routeAfterAssertion` 改為讀取 PASS/FAIL、failure type 與剩餘 Executor round 預算；business FAIL 不再回 Executor。
+- **相依 change**：`executor-target-guidance-and-no-progress-recovery` 依賴本 change 的 state 與路由契約，並負責讓 5 個 Executor rounds 成為跨斷言共用的預算。
+- **相容性**：不變更資料庫 Schema、前端 API 或 PASS/FAIL 決定權；舊回應缺少分類時仍走 operational 補救路徑。路由與重試行為則依本提案有意改變。

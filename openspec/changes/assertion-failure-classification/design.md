@@ -1,65 +1,94 @@
 ## Context
 
-現行狀態機為 `init → executor → (routeAfterExecution) → step_asserter | executor | reporter`（見 `openspec/changes/separate-action-and-assertion/specs/e2e-runner/spec.md`）。斷言失敗回流路徑：`stepAsserterNode`（`backend/src/graph.ts:604`）在 FAIL 時以模型產生的自然語言 `step_assertion_reason` 寫入 `assert_failure` log，並遞增 `step_retry_count`；`executorNode` 於下一輪組裝該步驟 Execution History（`graph.ts:492-503`）時，將動作結果與斷言失敗回饋併入單一 `Action N: ... / Result/Feedback: ...` 欄位，開頭標題即 `Learn from failures/retries`。執行器因此無法分辨「操作未完成（應補救）」與「結果不符（應收手）」，傾向將任何 FAIL 解讀為任務未完，追加動作企圖讓畫面符合預期——此即「過度修正致假成功」的誘因。動機詳見 proposal.md - Why。
+現行狀態機為 `init → executor → (routeAfterExecution) → step_asserter → (routeAfterAssertion) → step_tracker | executor | reporter`。`stepAsserterNode` 在 FAIL 時記錄自然語言 `step_assertion_reason` 並遞增 `step_retry_count`，但所有未達上限的 FAIL 都回流 Executor。Executor 因而無法區分「操作可能未完成」與「操作完成但業務結果不符」，容易把 business failure 當成待修復工作而追加操作。
 
-`separate-action-and-assertion`（2026-09-11）提案第 6 行已提出「操作性失敗 vs 業務性斷言失敗」的錯誤歸因概念，但僅停在語言層，未落地為可程式讀取的訊號。本 change 將該概念結構化。
+既有設計曾以 Execution History 提示 business failure 後「直接呼叫 done_acting」且不改路由，但這仍會進行一次沒有新證據的 Executor 決策，並可能形成 `done_acting → business FAIL → executor` 循環。已確認的新路線是讓 `failure_type` 直接參與路由：business 收斂至 reporter，operational 才有資格使用剩餘動作預算補救。
+
+本 change 是 `executor-target-guidance-and-no-progress-recovery` 的先行依賴。它負責分類、state propagation 與 `routeAfterAssertion`；後續 change 讓 5 個 Executor rounds 成為完整的跨斷言共用預算，並加入 Objective、No-Progress、terminal tool、導航與完整 Reporter 診斷。
 
 ## Goals / Non-Goals
 
 **Goals:**
-- 讓 `step_asserter` 的 FAIL 結果攜帶結構化 `failure_type`（`business`/`operational`），由模型基於證據判定，不引本地解析。
-- 讓 `executor` 的 Execution History 依 `failure_type` 分流回饋語意：`business` 附加「不得翻轉失敗狀態」的收手指示，`operational` 維持補救語意。
-- 維持 100% 向後相容：不變 PASS/FAIL 判定、不變路由、不變重試計數、不變資料庫 Schema 與前端 UI。
+- 讓每個 FAIL 帶有可程式判讀的 business/operational 分類，並保留模型原始理由。
+- 讓 business failure 直接且確定地終止，不再呼叫 Executor。
+- 讓 operational failure 只在尚有 Executor round 預算時回流補救。
+- 對舊 response、缺欄位與解析例外維持安全相容預設。
+- 為 assertion 類終止分支提供明確的 `termination_cause`，避免 Reporter 由文字或計數器倒推。
 
 **Non-Goals:**
-- 不把最終 PASS/FAIL 決定權交還執行器（延續 `separate-action-and-assertion` 設計決策 1）。
-- 不在斷言路徑引入 `text:`/`url:` 等本地解析規則（延續既有決策）。
-- 不調整 `executor_turn_count` / `step_retry_count` 上限與既有路由邏輯。
-- 不處理「期望失敗型結果」的目標監護規則（另案併入 `executor-target-guidance-and-no-progress-recovery`）。
+- 不把 PASS/FAIL 決定權交還 Executor。
+- 不使用 `text:`、`url:`、錯誤關鍵字、retry count 或其他本地規則推定 failure type。
+- 不在本 change 實作 Step Objective、No-Progress、導航回饋、popup 護欄或完整安全動作摘要。
+- 不變更資料庫 Schema或前端 API。
 
 ## Decisions
 
-### 1. `failure_type` 由 Asserter 模型結構化輸出，而非本地規則推斷
+### 1. `failure_type` 由 Asserter 模型產生，Parser 提供 operational 預設
 
-`StepAssertionSchema` 新增欄位 `failure_type: z.enum(["business", "operational"])`，`buildStepAsserterPrompt` 在 Rules 中定義兩類語意（business = 動作已完成但結果與預期不符；operational = 動作可能未完成或操作層障礙），並要求模型 FAIL 時一併輸出。
+`StepAssertionSchema` 增加 optional 的 `failure_type: z.enum(["business", "operational"])`。`buildStepAsserterPrompt` 明確定義：
 
-- **緣由**：延續 `separate-action-and-assertion` 的「純模型語意斷言」路線——本地規則無法可靠區分語意性落差，且踩「禁止解析預期字串」紅線。用模型產出分類與現有 PASS/FAIL 判定同源同證，一致性最高。
-- **替代方案（否決）**：以本地啟發式（比對重試次數、工具回傳是否含「失敗/錯誤」字樣）推斷類別。會被動態等待失敗誤判、無法覆蓋語意性落差，且違背既有「不許本地解析」決策。
-- **替代方案（否決）**：由 `executor_turn_count` / `step_retry_count` 數值高低代理分類。計數是流程狀態不是失敗本質，數值門檻無法對應失敗性質。
-- **相容性**：schema 新增欄位為可選輸出；舊模型或例外路徑缺欄位時，`parseStepAssertionResponse` 以 `"operational"` 補預設，行為與現行一致。
+- `business`：Step Action 已完成，但頁面狀態與 `stepExpected` 不符；
+- `operational`：Step Action 可能未完成，或有元素變動、等待失效、操作未生效等障礙。
 
-### 2. `failure_type` 隨 `step_asserter` 回傳狀態，供 `executorNode` 分流
+Prompt 要求模型在 FAIL 時提供分類；欄位在 schema 保持 optional，讓舊模型及不同 provider response shape 仍可解析。`parseStepAssertionResponse` 對缺欄位、無效值或分類解析例外一律回傳 `operational`。不得由本地內容、工具字串或計數器推斷分類。
 
-`stepAsserterNode` 於 return 時新增 `step_assertion_failure_type` 狀態欄位（`TestState` 新增 Annotation）；`executorNode` 組裝該步驟 Execution History 時讀取該欄位：
+**理由**：缺少分類代表資訊不足，不應因此採取不可回復的提早終止；operational 預設保留補救機會並維持舊行為方向。
 
-```
-Step: <idx+1> 的斷言結果為 FAIL (failure_type: business)
-```
+### 2. `step_assertion_failure_type` 是明確的 LangGraph state
 
-- `business`：於 History 尾端附加「此步驟預期結果未被滿足。完成要求的動作後請直接呼叫 done_acting，不得追加以改變失敗狀態。」
+`TestState` 新增 `step_assertion_failure_type: "business" | "operational" | null`，並於 init 設為 `null`。`stepAsserterNode` 的回傳規則：
 
-- `operational`：維持現行語意（允許重新觀察/補救）。
+- PASS 或無 `stepExpected` 的直接通過 → `null`；
+- 可解析 FAIL → 模型分類；
+- 缺欄位或例外 FAIL → `operational`。
 
-- **緣由**：`failure_type` 若只存於 log 文字，執行器仍無法可靠解讀；以 state 欄位顯式傳遞，讓分流語意由程式碼組裝而非依賴模型複述。分割點放在 `executorNode` 的 historyPrompt 組裝處（`graph.ts:492-503`），與現有機制同點，改動面最小。
-- **替代方案（否決）**：把分流語意直接寫進 `step_assertion_reason` 的文字。會讓同一 FAIL 理由因執行器重試次數不同而變異，且理由從「診斷」變成「指導」，偏離 `step_asserter` 的證據判定位。
-- **替代方案（否決）**：於 `routeAfterAssertion` 預先分流（business 直接送 reporter）。會剝奪執行器對操作性失敗的補救機會，並改變既有路由語意。
+成功推進下一步時再次清空 assertion result、reason 與 failure type，避免跨步驟殘留。分類不可只編碼在 log 文字中，因 Router 必須以型別安全的 state 分流。
 
-### 3. 分流語意置於 `historyPrompt`，不動工具與路由
+### 3. Asserter 保留已使用的 Executor round
 
-- System Prompt 的既有規則 5（「獨立斷言階段評估預期結果；勿為驗證而追加動作」）維持不變，作為與本機制一致的底座。
-- `routeAfterAssertion` 邏輯完全不改（仍依 `step_retry_count` 上限判斷回流或送 reporter）；`failure_type` 只影響回流後 executor 讀到的語意，不影響是否回流。
-- **緣由**：將「防過度修正」落回執行器的決策上下文，而非提升至路由層，符合「資訊流放寬、結構不放寬」的既有架構精神。
+`stepAsserterNode` 不再把 `executor_turn_count` 重設為 0。Router 必須看見實際已使用回合，才能判斷 operational failure 是否仍可補救。只有成功進入下一步的 `stepTrackerNode` 才重設計數。
+
+本 change 建立「斷言不補滿動作預算」的必要 state 行為；後續 `executor-target-guidance-and-no-progress-recovery` 再補齊每輪顯示、terminal `done_acting` 及所有預算邊界測試。
+
+### 4. `routeAfterAssertion` 以分類與剩餘預算分流
+
+Router 保持 pure function，輸入至少包含 `step_assertion_result`、`step_assertion_failure_type` 與 `executor_turn_count`：
+
+- PASS → `step_tracker`；
+- FAIL + business → `reporter`；
+- FAIL + operational/缺值 + `executor_turn_count < 5` → `executor`；
+- FAIL + operational/缺值 + `executor_turn_count >= 5` → `reporter`。
+
+PASS 的優先序最高。business 不讀剩餘預算，因動作已完成且不允許翻轉結果。缺值在進入 Router 前或 Router 邊界統一視為 operational。
+
+### 5. `stepAsserterNode` 設定 assertion 類 `termination_cause`
+
+Router 不修改 state。`stepAsserterNode` 在產生 FAIL state 時，依分類與目前回合數設定：
+
+- business → `business_assertion_failure`；
+- operational 且回合已達上限 → `operational_budget_exhausted`；
+- operational 且仍可補救 → `null`。
+
+`termination_cause` 在本 change 先支援 assertion 相關值；後續 change 擴充 `executor_budget_exhausted`、`unsupported_new_page` 等值及完整 Reporter 文案。
+
+### 6. Business 不再建立 Executor 指導，Operational 保留原始回饋
+
+`assert_failure` log 保存結構化分類與 Asserter 原始 reason。business failure 直接進 reporter，因此不再將「請立即 done_acting」之類指導注入 Execution History。operational failure 返回 Executor 時，既有 History 可呈現原始 reason 作為重新觀察或補救依據。
+
+Reason 保持證據診斷，不混入流程指令；分類與指導責任分離，可避免同一理由隨路由狀態改寫。
 
 ## Risks / Trade-offs
 
-- **[Risk] 模型分類不精準（誤將 operational 標成 business）** → *Mitigation*：`failure_type` 僅影響回流語意與提示措辭，不改變 PASS/FAIL、不改變重試與路由；最壞情形是執行器少做一輪補救即收手，最終仍由 `step_asserter` 依證據做最後判定，不會造成系統誤判通過。
-- **[Risk] 誤導執行器對操作性失敗過早收手** → *Mitigation*：prompt 對 `operational` 明確定義為「動作可能未完成」，且無分類預設即 `operational`（維持現行行為為主流）；僅當模型確信為業務性落差時才觸發收手指示。
-- **[Risk] 新增 state 欄位對既有測試/前端無意影響** → *Mitigation*：欄位僅存在於後端 LangGraph 執行態，前端 log 渲染與資料庫不受影響；既有 vitest 中的 state 初始化不讀新欄位（可選），以測試確認無回歸。
+- **[Risk] operational 被誤分類為 business，造成過早終止** → **Mitigation**：缺值與例外預設 operational；Prompt 以「動作是否已完成」作為核心界線；測試覆蓋典型分類。最壞結果為提早 FAIL，不會產生假 PASS。
+- **[Risk] business 被誤分類為 operational，造成額外補救** → **Mitigation**：後續 change 的 Step Action/Objective 權限規則與共用 5 輪預算限制過度修正範圍；本 change 測試確保正確分類時絕不回 Executor。
+- **[Risk] optional schema 看似允許模型省略分類** → **Mitigation**：Prompt 對 FAIL 明訂必填；optional 僅作 provider/舊 response 相容，Parser 永遠輸出明確分類。
+- **[Risk] 新 state 與 route signature 影響既有測試** → **Mitigation**：初始化提供 null，舊 state 缺值按 operational 處理，並擴充所有 Router 與 graph fixture。
+- **[Risk] 本 change 單獨部署時完整共用預算提示尚未到位** → **Mitigation**：分類路由與計數保留先建立穩定契約；按 migration 順序緊接套用依賴本 change 的 guidance change。
 
 ## Migration Plan
 
-無資料庫遷移與外部相依變更；僅重啟後端 Worker 生效。Rollback：還原 `prompt.ts`、`graph.ts`、`state.ts` 修改即可（`failure_type` 為可選輸出的附加欄位，移除後舊日誌仍以 `operational` 語意運作）。已存在之歷史 FAIL log 不具 `failure_type`，依決策 1/3 之預設處理，無需遷移。
-
-## Open Questions
-
-- 前端 log 畫面是否需以視覺化標記區分 `business`/`operational` 失敗？（可安全延後：現行為自由文字 `Result/Feedback` 呈現，`failure_type` 可直接置入 log 文字供檢視；不影響規格與實作結果。）
+1. 先套用本 change：Schema/Parser、state、Asserter 計數保留、分類式 route 與 assertion 終止原因。
+2. 再套用 `executor-target-guidance-and-no-progress-recovery`：補齊完整共用回合 UX、Objective、No-Progress、terminal tool、導航與 Reporter 診斷。
+3. 無資料庫 migration；新欄位只存在 LangGraph 執行 state，failure type 以既有自由文字 log 呈現。
+4. 部署時重啟後端 Worker。
+5. Rollback 時先還原後續 guidance change，再還原本 change，避免 Router 讀取已被移除的 state 契約。

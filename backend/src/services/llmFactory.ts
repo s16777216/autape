@@ -1,7 +1,10 @@
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import { Runnable } from "@langchain/core/runnables";
-import { FailureSummarySchema, StepAssertionSchema } from "../graph/prompt.js";
+import {
+  FailureSummarySchema,
+  StepAssertionStructuredOutputSchema,
+} from "../graph/prompt.js";
 import type { ModelSetting } from "../entities/ModelSetting.js";
 
 /**
@@ -38,7 +41,9 @@ export function getStepAsserterModel(modelSetting: ModelSetting): Runnable {
       model: modelSetting.model,
       temperature: 0.0,
       apiKey: modelSetting.apiKey || undefined,
-    }).withStructuredOutput(StepAssertionSchema, { includeRaw: true });
+    }).withStructuredOutput(StepAssertionStructuredOutputSchema, {
+      includeRaw: true,
+    });
   }
 
   return new ChatOpenAI({
@@ -48,7 +53,9 @@ export function getStepAsserterModel(modelSetting: ModelSetting): Runnable {
     configuration: {
       baseURL: modelSetting.baseUrl || "http://localhost:11434/v1",
     },
-  }).withStructuredOutput(StepAssertionSchema, { includeRaw: true });
+  }).withStructuredOutput(StepAssertionStructuredOutputSchema, {
+    includeRaw: true,
+  });
 }
 
 /**

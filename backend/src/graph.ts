@@ -5,7 +5,12 @@ import {
   SystemMessage,
 } from "@langchain/core/messages";
 
-import { TestState, LogEntry } from "./state.js";
+import {
+  TestState,
+  LogEntry,
+  type AssertionFailureType,
+  type TerminationCause,
+} from "./state.js";
 import { BrowserManager } from "./browser.js";
 import { BrowserTools } from "./tools.js";
 import { AppDataSource } from "./db.js";
@@ -51,9 +56,10 @@ function parseContentToString(content: any): string {
   return "";
 }
 
-type StepAssertion = {
+export type StepAssertion = {
   result: "PASS" | "FAIL";
   reason: string;
+  failure_type: AssertionFailureType | null;
 };
 
 function parseJsonText(text: string): unknown {
@@ -105,8 +111,36 @@ export function parseStepAssertionResponse(response: any): StepAssertion {
   }
 
   for (const candidate of candidates) {
-    const parsed = StepAssertionSchema.safeParse(candidate);
-    if (parsed.success) return parsed.data;
+    if (!candidate || typeof candidate !== "object") continue;
+
+    try {
+      const result = (candidate as { result?: unknown }).result;
+      const reason = (candidate as { reason?: unknown }).reason;
+      if (
+        (result !== "PASS" && result !== "FAIL") ||
+        typeof reason !== "string" ||
+        reason.length === 0
+      ) {
+        continue;
+      }
+
+      if (result === "PASS") {
+        return { result, reason, failure_type: null };
+      }
+
+      let failureType: AssertionFailureType = "operational";
+      try {
+        const parsed = StepAssertionSchema.safeParse(candidate);
+        if (parsed.success && parsed.data.failure_type) {
+          failureType = parsed.data.failure_type;
+        }
+      } catch {
+        // 分類欄位讀取或驗證異常時採可補救的 operational 預設。
+      }
+      return { result, reason, failure_type: failureType };
+    } catch {
+      // 無法讀取必要欄位時繼續嘗試其他 provider response shape。
+    }
   }
 
   throw new Error(
@@ -128,6 +162,34 @@ function serializeStepAssertionRawResponse(response: any): string {
   } catch {
     return String(raw).slice(0, 8000);
   }
+}
+
+/**
+ * 建立 Executor 可見的同一步驟歷史。Assertion 失敗只回饋模型原始理由，
+ * 不把 business 流程指令或結構化分類混入操作指導。
+ */
+export function buildExecutionHistoryPrompt(logs: LogEntry[]): string {
+  if (logs.length === 0) return "";
+
+  return (
+    "\n\n# Execution History for the Current Step (Learn from failures/retries):\n" +
+    logs
+      .map((log, i) => {
+        let feedback = log.result;
+        if (log.action === "assert_failure" && log.ai_response) {
+          try {
+            const assertion = JSON.parse(log.ai_response) as { reason?: unknown };
+            if (typeof assertion.reason === "string") {
+              feedback = assertion.reason;
+            }
+          } catch {
+            // 解析失敗時保留既有自由文字，兼容舊日誌。
+          }
+        }
+        return `Action ${i + 1}: ${log.action}\nResult/Feedback: ${feedback}`;
+      })
+      .join("\n\n")
+  );
 }
 
 export interface ParsedToolAction {
@@ -249,6 +311,8 @@ async initNode(state: typeof TestState.State) {
       step_retry_count: 0,
       step_assertion_result: null,
       step_assertion_reason: "",
+      step_assertion_failure_type: null,
+      termination_cause: null,
       screenshots_paths: [],
       logs: [],
     };
@@ -491,16 +555,7 @@ async initNode(state: typeof TestState.State) {
 
     // 2.5 取得當前步驟的歷史執行紀錄（包含工具呼叫與驗證失敗反饋）
     const currentStepLogs = (state.logs || []).filter((l) => l.step_idx === idx);
-    let historyPrompt = "";
-    if (currentStepLogs.length > 0) {
-      historyPrompt =
-        "\n\n# Execution History for the Current Step (Learn from failures/retries):\n" +
-        currentStepLogs
-          .map((log, i) => {
-            return `Action ${i + 1}: ${log.action}\nResult/Feedback: ${log.result}`;
-          })
-          .join("\n\n");
-    }
+    const historyPrompt = buildExecutionHistoryPrompt(currentStepLogs);
 
     // 3. 呼叫模型（使用帶貼紙的截圖 + 元素清單）
     const messages = [
@@ -623,6 +678,8 @@ async initNode(state: typeof TestState.State) {
         logs,
         step_assertion_result: "PASS" as const,
         step_assertion_reason: reason,
+        step_assertion_failure_type: null,
+        termination_cause: null,
       };
     }
 
@@ -674,6 +731,14 @@ async initNode(state: typeof TestState.State) {
       totalTokens = raw.usage_metadata?.total_tokens ?? 0;
       const assertion = parseStepAssertionResponse(response);
       const passed = assertion.result === "PASS";
+      const failureType = passed ? null : assertion.failure_type;
+      const terminationCause: TerminationCause = passed
+        ? null
+        : failureType === "business"
+          ? "business_assertion_failure"
+          : (state.executor_turn_count ?? 0) >= 5
+            ? "operational_budget_exhausted"
+            : null;
 
       logs.push({
         step_idx: idx,
@@ -681,7 +746,7 @@ async initNode(state: typeof TestState.State) {
         action: passed ? "assert_pass" : "assert_failure",
         result: passed
           ? `斷言通過：${assertion.reason}`
-          : `斷言未通過：${assertion.reason}`,
+          : `斷言未通過 [${failureType}]：${assertion.reason}`,
         ai_response: JSON.stringify(assertion),
         timestamp: new Date().toISOString(),
         prompt_tokens: promptTokens,
@@ -695,7 +760,8 @@ return {
         simplified_dom: simplifiedDom,
         step_assertion_result: assertion.result,
         step_assertion_reason: assertion.reason,
-        executor_turn_count: 0,
+        step_assertion_failure_type: failureType,
+        termination_cause: terminationCause,
         step_retry_count: passed
           ? state.step_retry_count
           : (state.step_retry_count ?? 0) + 1,
@@ -706,7 +772,7 @@ return {
         step_idx: idx,
         step_description: stepContent,
         action: "assert_failure",
-        result: `斷言未通過：${reason}`,
+        result: `斷言未通過 [operational]：${reason}`,
         ai_response: serializeStepAssertionRawResponse(response),
         timestamp: new Date().toISOString(),
         prompt_tokens: promptTokens,
@@ -719,7 +785,11 @@ return {
         simplified_dom: simplifiedDom,
         step_assertion_result: "FAIL" as const,
         step_assertion_reason: reason,
-        executor_turn_count: 0,
+        step_assertion_failure_type: "operational" as const,
+        termination_cause:
+          (state.executor_turn_count ?? 0) >= 5
+            ? ("operational_budget_exhausted" as const)
+            : null,
         step_retry_count: (state.step_retry_count ?? 0) + 1,
       };
     }
@@ -840,6 +910,10 @@ return {
       current_step_idx: idx + 1,
       executor_turn_count: 0,
       step_retry_count: 0,
+      step_assertion_result: null,
+      step_assertion_reason: "",
+      step_assertion_failure_type: null,
+      termination_cause: null,
     };
   }
 

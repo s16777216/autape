@@ -35,13 +35,18 @@ export function routeAfterExecution(state: {
  */
 export function routeAfterAssertion(state: {
   step_assertion_result: "PASS" | "FAIL" | null;
-  step_retry_count: number;
+  step_assertion_failure_type?: "business" | "operational" | null;
+  executor_turn_count: number;
 }): "step_tracker" | "executor" | "reporter" {
   if (state.step_assertion_result === "PASS") {
     return "step_tracker";
   }
 
-  if (state.step_retry_count >= 5) {
+  if (state.step_assertion_failure_type === "business") {
+    return "reporter";
+  }
+
+  if ((state.executor_turn_count ?? 0) >= 5) {
     return "reporter";
   }
 

@@ -25,12 +25,12 @@
 
 ### 1. `failure_type` 由 Asserter 模型產生，Parser 提供 operational 預設
 
-`StepAssertionSchema` 增加 optional 的 `failure_type: z.enum(["business", "operational"])`。`buildStepAsserterPrompt` 明確定義：
+`StepAssertionSchema` 增加 optional 的 `failure_type: z.enum(["business", "operational"])`，供 parser 接受舊 response 與不同 provider shape。另以 provider-facing structured-output schema 將 `failure_type` 定義為 required nullable，滿足 OpenAI Responses API「所有欄位必須 required」的限制；模型回傳 `null` 時由 parser 視同缺欄位並採 `operational` 預設。`buildStepAsserterPrompt` 明確定義：
 
 - `business`：Step Action 已完成，但頁面狀態與 `stepExpected` 不符；
 - `operational`：Step Action 可能未完成，或有元素變動、等待失效、操作未生效等障礙。
 
-Prompt 要求模型在 FAIL 時提供分類；欄位在 schema 保持 optional，讓舊模型及不同 provider response shape 仍可解析。`parseStepAssertionResponse` 對缺欄位、無效值或分類解析例外一律回傳 `operational`。不得由本地內容、工具字串或計數器推斷分類。
+Prompt 要求模型在 FAIL 時提供分類；parser schema 的欄位保持 optional，讓舊模型及不同 provider response shape 仍可解析，而送入模型 SDK 的 schema 採 required nullable 以符合 strict structured outputs。`parseStepAssertionResponse` 對 `null`、缺欄位、無效值或分類解析例外一律回傳 `operational`。不得由本地內容、工具字串或計數器推斷分類。
 
 **理由**：缺少分類代表資訊不足，不應因此採取不可回復的提早終止；operational 預設保留補救機會並維持舊行為方向。
 
@@ -82,6 +82,7 @@ Reason 保持證據診斷，不混入流程指令；分類與指導責任分離�
 - **[Risk] operational 被誤分類為 business，造成過早終止** → **Mitigation**：缺值與例外預設 operational；Prompt 以「動作是否已完成」作為核心界線；測試覆蓋典型分類。最壞結果為提早 FAIL，不會產生假 PASS。
 - **[Risk] business 被誤分類為 operational，造成額外補救** → **Mitigation**：後續 change 的 Step Action/Objective 權限規則與共用 5 輪預算限制過度修正範圍；本 change 測試確保正確分類時絕不回 Executor。
 - **[Risk] optional schema 看似允許模型省略分類** → **Mitigation**：Prompt 對 FAIL 明訂必填；optional 僅作 provider/舊 response 相容，Parser 永遠輸出明確分類。
+- **[Risk] OpenAI strict structured outputs 拒絕 optional-only 欄位** → **Mitigation**：provider-facing schema 使用 required nullable，並以 OpenAI schema helper 回歸測試確認可轉換；`null` 仍採 operational 預設。
 - **[Risk] 新 state 與 route signature 影響既有測試** → **Mitigation**：初始化提供 null，舊 state 缺值按 operational 處理，並擴充所有 Router 與 graph fixture。
 - **[Risk] 本 change 單獨部署時完整共用預算提示尚未到位** → **Mitigation**：分類路由與計數保留先建立穩定契約；按 migration 順序緊接套用依賴本 change 的 guidance change。
 

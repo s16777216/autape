@@ -12,6 +12,12 @@ export interface LogEntry {
   total_tokens?: number;
 }
 
+export type AssertionFailureType = "business" | "operational";
+export type TerminationCause =
+  | "business_assertion_failure"
+  | "operational_budget_exhausted"
+  | null;
+
 export const TestState = Annotation.Root({
   // 測試案例基本資訊
   run_id: Annotation<string>(),
@@ -28,6 +34,8 @@ export const TestState = Annotation.Root({
   step_retry_count: Annotation<number>(),     // 斷言重試計數（step_asserter 判定 FAIL 後的重試次數）
   step_assertion_result: Annotation<"PASS" | "FAIL" | null>(),
   step_assertion_reason: Annotation<string>(),
+  step_assertion_failure_type: Annotation<AssertionFailureType | null>(),
+  termination_cause: Annotation<TerminationCause>(),
   last_screenshot: Annotation<string | null>(),   // base64 字串，用以傳給 Gemini 多模態
   simplified_dom: Annotation<string>(),          // 簡化過濾後的 DOM 文字
   

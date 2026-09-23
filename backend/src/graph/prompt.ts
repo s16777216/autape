@@ -54,6 +54,27 @@ export const StepAssertionSchema = z.object({
     .string()
     .min(1)
     .describe("A concise explanation grounded in observable page evidence."),
+  failure_type: z
+    .enum(["business", "operational"])
+    .optional()
+    .describe(
+      "Required when result is FAIL. business means the requested action completed but the observed outcome differs; operational means the action may not have completed or an interaction obstacle remains.",
+    ),
+});
+
+/**
+ * Provider-facing strict structured-output schema.
+ * OpenAI Responses API requires every property to be required, so provider
+ * compatibility is represented by nullable rather than optional. The parser
+ * still accepts omitted fields through StepAssertionSchema above.
+ */
+export const StepAssertionStructuredOutputSchema = StepAssertionSchema.extend({
+  failure_type: z
+    .enum(["business", "operational"])
+    .nullable()
+    .describe(
+      "Return null when result is PASS. When result is FAIL, return business or operational; use null only when classification is unavailable.",
+    ),
 });
 
 /**
@@ -77,7 +98,9 @@ export function buildStepAsserterPrompt(params: {
     `2. PASS only when observable DOM or visual evidence supports the expected outcome.\n` +
     `3. FAIL when the evidence contradicts the outcome or is insufficient to establish it.\n` +
     `4. Interpret the expected outcome as natural language. Do not treat text:, url:, URL-like strings, or any other string shape as a special assertion syntax.\n` +
-    `5. Do not assume that an action succeeded merely because it was attempted.`
+    `5. Do not assume that an action succeeded merely because it was attempted.\n` +
+    `6. Always return failure_type. For PASS, return null. For every FAIL: Use business when the Step Action is complete but the observable page state does not match the Expected Outcome. Use operational when the Step Action may be incomplete or an interaction obstacle remains, such as a changed element, expired wait, or action that did not take effect.\n` +
+    `7. Do not infer failure_type from keywords or retry counts; classify it from the supplied page evidence and whether the Step Action completed.`
   );
 }
 

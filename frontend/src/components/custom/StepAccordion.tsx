@@ -239,12 +239,15 @@ function StepCard({
         ) : (
           <Timeline>
             {step.logs?.map((log, index) => {
+              const isStrategyHint = log.action === "strategy_hint";
               const logHasError =
-                log.result?.toLowerCase().includes("fail") ||
-                log.result?.toLowerCase().includes("error");
+                !isStrategyHint &&
+                (log.result?.toLowerCase().includes("fail") ||
+                  log.result?.toLowerCase().includes("error"));
               const isLogPending =
-                log.result?.toLowerCase() === "pending" ||
-                log.result?.toLowerCase() === "running";
+                !isStrategyHint &&
+                (log.result?.toLowerCase() === "pending" ||
+                  log.result?.toLowerCase() === "running");
               const isItemLast = !step.stepExpected && index === (step.logs?.length ?? 0) - 1;
 
               const logDot = (

@@ -19,10 +19,17 @@ import { TestLog } from "./entities/TestLog.js";
 import { TestRunStep } from "./entities/TestRunStep.js";
 import {
   buildExecutorSystemPrompt,
+  buildExecutorHumanText,
   buildFailureSummarizerSystemPrompt,
   buildStepAsserterPrompt,
   StepAssertionSchema,
 } from "./graph/prompt.js";
+import {
+  detectNoProgress,
+  isFailedToolResult,
+  type NoProgressReason,
+} from "./graph/noProgress.js";
+import { buildTerminationFinalReason } from "./graph/reporterDiagnostics.js";
 import {
   routeAfterAssertion,
   routeAfterExecution,
@@ -223,13 +230,14 @@ export function parseToolAction(action: string): ParsedToolAction | null {
 }
 
 export function isToolExecutionFailed(toolResult: unknown): boolean {
-  if (typeof toolResult !== "string") {
-    return false;
-  }
-  const str = toolResult.trim();
-  if (str.includes("失敗")) return true;
-  if (str.startsWith("錯誤")) return true;
-  return false;
+  return isFailedToolResult(toolResult);
+}
+
+function buildStrategyHint(reason: NoProgressReason, remainingRounds: number): string {
+  const guidance = reason === "all_tools_failed"
+    ? "本輪所有工具均失敗；請重新觀察頁面並改用不同且更可靠的定位或操作策略。"
+    : "相鄰回合重複了相同副作用操作；請停止重試相同動作並改採不同策略。";
+  return `[${reason}] ${guidance} 剩餘 Executor rounds：${remainingRounds}。`;
 }
 
 
@@ -308,6 +316,7 @@ async initNode(state: typeof TestState.State) {
     return {
       current_step_idx: 0,
       executor_turn_count: 0,
+      executor_last_round_done: false,
       step_retry_count: 0,
       step_assertion_result: null,
       step_assertion_reason: "",
@@ -475,6 +484,8 @@ async initNode(state: typeof TestState.State) {
               total_tokens: 0,
             });
 
+            if (tool_name === "done_acting") break;
+
             // 若執行完 navigate_to 或 waitForNavigation，標記並刷新 DOM ID
             const waitStrategy = (
               tool_args as { waitStrategy?: string } | undefined
@@ -508,6 +519,7 @@ async initNode(state: typeof TestState.State) {
           return {
             logs: [...(state.logs || []), ...replayLogs],
             executor_turn_count: 0,
+            executor_last_round_done: true,
             step_retry_count: 0,
           };
         } else {
@@ -556,6 +568,7 @@ async initNode(state: typeof TestState.State) {
     // 2.5 取得當前步驟的歷史執行紀錄（包含工具呼叫與驗證失敗反饋）
     const currentStepLogs = (state.logs || []).filter((l) => l.step_idx === idx);
     const historyPrompt = buildExecutionHistoryPrompt(currentStepLogs);
+    const usedRounds = state.executor_turn_count ?? 0;
 
     // 3. 呼叫模型（使用帶貼紙的截圖 + 元素清單）
     const messages = [
@@ -568,7 +581,12 @@ async initNode(state: typeof TestState.State) {
           },
           {
             type: "text",
-            text: `當前頁面已預先觀察完畢。截圖中的黃色數字標籤即為元素 ID。\n\n${element_list}\n\n請根據截圖中的標籤與元素清單，決定下一步要執行的工具。${historyPrompt}`,
+            text: buildExecutorHumanText({
+              elementList: element_list,
+              stepObjective: state.step_expecteds[idx],
+              historyPrompt,
+              usedRounds,
+            }),
           },
         ],
       }),
@@ -599,12 +617,21 @@ async initNode(state: typeof TestState.State) {
       return {
         logs,
         executor_turn_count: (state.executor_turn_count ?? 0) + 1,
+        executor_last_round_done: false,
+        termination_cause:
+          (state.executor_turn_count ?? 0) + 1 >= 5
+            ? "executor_budget_exhausted"
+            : state.termination_cause,
         last_screenshot: screenshot_base64,
         simplified_dom: element_list,
       };
     }
 
-    // 5. 依序執行工具呼叫
+    // 5. 依序執行工具呼叫。一次模型決策只算一輪；done_acting 為 terminal tool。
+    const currentRound = (state.executor_turn_count ?? 0) + 1;
+    const currentRoundLogs: LogEntry[] = [];
+    let didDoneActing = false;
+    let terminationCause: TerminationCause = state.termination_cause ?? null;
     for (let i = 0; i < tool_calls.length; i++) {
       const tc = tool_calls[i];
       const tool_name = tc.name;
@@ -618,7 +645,7 @@ async initNode(state: typeof TestState.State) {
 
       if (selected_tool) {
         const tool_result = await selected_tool.invoke(tool_args);
-        logs.push({
+        const log: LogEntry = {
           step_idx: idx,
           step_description: step_content,
           action: `${tool_name}(${JSON.stringify(tool_args)})`,
@@ -630,9 +657,20 @@ async initNode(state: typeof TestState.State) {
           prompt_tokens: pTokens,
           completion_tokens: cTokens,
           total_tokens: tTokens,
-        });
+          executor_round: currentRound,
+        };
+        logs.push(log);
+        currentRoundLogs.push(log);
+        if (
+          tool_name === "click" &&
+          typeof tool_result === "string" &&
+          tool_result.includes("unsupported_new_page")
+        ) {
+          terminationCause = "unsupported_new_page";
+          break;
+        }
       } else {
-        logs.push({
+        const log: LogEntry = {
           step_idx: idx,
           step_description: step_content,
           action: `unknown_tool: ${tool_name}`,
@@ -641,13 +679,55 @@ async initNode(state: typeof TestState.State) {
           prompt_tokens: pTokens,
           completion_tokens: cTokens,
           total_tokens: tTokens,
+          executor_round: currentRound,
+        };
+        logs.push(log);
+        currentRoundLogs.push(log);
+      }
+
+      if (tool_name === "done_acting") {
+        didDoneActing = true;
+        break;
+      }
+    }
+
+    if (!didDoneActing && !terminationCause) {
+      const reason = detectNoProgress({
+        currentRoundLogs,
+        previousLogs: state.logs || [],
+      });
+      const lastHint = [...(state.logs || [])]
+        .reverse()
+        .find((log) => log.step_idx === idx && log.action === "strategy_hint");
+      const repeatsPreviousRound =
+        lastHint?.ai_response === reason &&
+        (lastHint.executor_round === currentRound - 1 ||
+          (lastHint.executor_round === undefined && state.logs?.at(-1) === lastHint));
+      if (reason && !repeatsPreviousRound) {
+        logs.push({
+          step_idx: idx,
+          step_description: step_content,
+          action: "strategy_hint",
+          result: buildStrategyHint(reason, Math.max(0, 5 - currentRound)),
+          ai_response: reason,
+          timestamp: new Date().toISOString(),
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          executor_round: currentRound,
         });
       }
     }
 
+    if (!didDoneActing && !terminationCause && currentRound >= 5) {
+      terminationCause = "executor_budget_exhausted";
+    }
+
     return {
       logs,
-      executor_turn_count: (state.executor_turn_count ?? 0) + 1,
+      executor_turn_count: currentRound,
+      executor_last_round_done: didDoneActing,
+      termination_cause: terminationCause,
       last_screenshot: screenshot_base64,
       simplified_dom: element_list,
     };
@@ -703,10 +783,23 @@ async initNode(state: typeof TestState.State) {
       stepContent,
       stepExpected,
     });
+
+    let currentUrl = "";
+    let pageTitle = "";
+    try {
+      currentUrl = this.browserManager.page?.url() ?? "";
+    } catch {}
+    try {
+      pageTitle = (await this.browserManager.page?.title()) ?? "";
+    } catch {}
+
     const evidenceContent: any[] = [
       {
         type: "text",
-        text: `以下是目前頁面的精簡 DOM 證據：\n\n${simplifiedDom}`,
+        text:
+          `目前頁面網址（Current URL）: ${currentUrl}` +
+          (pageTitle ? `\n頁面標題（Page Title）: ${pageTitle}` : "") +
+          `\n\n以下是目前頁面的精簡 DOM 證據：\n\n${simplifiedDom}`,
       },
     ];
     if (screenshotBase64) {
@@ -909,6 +1002,7 @@ return {
     return {
       current_step_idx: idx + 1,
       executor_turn_count: 0,
+      executor_last_round_done: false,
       step_retry_count: 0,
       step_assertion_result: null,
       step_assertion_reason: "",
@@ -928,7 +1022,13 @@ return {
     // 如果測試尚未執行完所有步驟就被迫中斷 (例如重試超限)
     if (currentStepIdx < steps.length) {
       update_data.final_result = "FAIL";
-      update_data.final_reason = `步驟 ${currentStepIdx + 1} (『${steps[currentStepIdx]}』) 執行次數達到上限但仍未完成，強制終止測試。`;
+      update_data.final_reason = buildTerminationFinalReason({
+        cause: state.termination_cause ?? "executor_budget_exhausted",
+        stepNumber: currentStepIdx + 1,
+        stepDescription: steps[currentStepIdx],
+        assertionReason: state.step_assertion_reason,
+        logs: (state.logs || []).filter((log) => log.step_idx === currentStepIdx),
+      });
     } else {
       update_data.final_result = "PASS";
       update_data.final_reason = "所有測試步驟均已成功執行完畢。";

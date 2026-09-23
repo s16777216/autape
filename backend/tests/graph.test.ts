@@ -29,16 +29,23 @@ import { TestLog } from "../src/entities/TestLog.js";
 import { TestRun } from "../src/entities/TestRun.js";
 import { TestRunStep } from "../src/entities/TestRunStep.js";
 
-function createStepAsserterHarness(response: unknown) {
+function createStepAsserterHarness(response: unknown, page?: { url?: string; title?: string }) {
   const invoke = vi.fn().mockResolvedValue(response);
   const getSimplifiedDOM = vi.fn().mockResolvedValue(
     '<div role="alert">登入成功</div>',
   );
   const getPageScreenshotBase64 = vi.fn().mockResolvedValue("cG5n");
   const builder = Object.create(E2EGraphBuilder.prototype) as E2EGraphBuilder;
+  const pageMock = page
+    ? { url: () => page.url, title: async () => page.title }
+    : undefined;
   Object.assign(builder as any, {
     asserter_model: { invoke },
-    browserManager: { getSimplifiedDOM, getPageScreenshotBase64 },
+    browserManager: {
+      getSimplifiedDOM,
+      getPageScreenshotBase64,
+      page: pageMock,
+    },
   });
   return { builder, invoke, getSimplifiedDOM, getPageScreenshotBase64 };
 }
@@ -107,6 +114,19 @@ describe("狀態機 Prompt 拼接與條件路由單元測試", () => {
       expect(prompt).toContain("CLICK-NAVIGATION MEANS DONE");
       expect(prompt).toContain("do NOT search for the same element again on the newly loaded page");
       expect(prompt).toContain("NEVER call navigate_to for the URL you are already on");
+    });
+
+    it("1c2. buildStepAsserterPrompt 明示以 Current URL 判斷導航型 Expected", () => {
+      const prompt = buildStepAsserterPrompt({
+        testName: "導航測試",
+        stepIdx: 0,
+        stepContent: "點擊 Learn more 連結",
+        stepExpected: "頁面跳轉到 https://www.iana.org/help/example-domains",
+      });
+
+      expect(prompt).toContain("目前頁面網址（Current URL）");
+      expect(prompt).toContain("URL/NAVIGATION EXPECTED OUTCOMES");
+      expect(prompt).toContain("do not FAIL a navigation outcome merely because that element is absent now");
     });
 
     it("1c. buildStepAsserterPrompt 與 schema 應支援純模型結構化斷言", () => {
@@ -462,6 +482,41 @@ describe("狀態機 Prompt 拼接與條件路由單元測試", () => {
         completion_tokens: 5,
         total_tokens: 15,
       });
+    });
+
+    it("non-empty expected injects the current URL/title into the model evidence", async () => {
+      const { builder, invoke } = createStepAsserterHarness(
+        {
+          parsed: { result: "PASS", reason: "已跳轉至目標網址" },
+          raw: { usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+        },
+        { url: "https://www.iana.org/help/example-domains", title: "Example Domains" },
+      );
+
+      const update = await builder.stepAsserterNode(
+        createAssertionState("頁面跳轉到 https://www.iana.org/help/example-domains"),
+      );
+
+      const humanContent = invoke.mock.calls[0][0][1].content;
+      const textPart = humanContent.find((c: any) => c.type === "text")?.text ?? "";
+      expect(textPart).toContain("目前頁面網址（Current URL）: https://www.iana.org/help/example-domains");
+      expect(textPart).toContain("頁面標題（Page Title）: Example Domains");
+      expect(update.step_assertion_result).toBe("PASS");
+      expect(update.step_assertion_failure_type).toBeNull();
+    });
+
+    it("non-empty URL expected still calls model when page API is unavailable", async () => {
+      const { builder, invoke } = createStepAsserterHarness({
+        parsed: { result: "PASS", reason: "證據符合預期" },
+        raw: { usage_metadata: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+      });
+
+      const update = await builder.stepAsserterNode(
+        createAssertionState("https://example.com/dashboard"),
+      );
+
+      expect(invoke).toHaveBeenCalledOnce();
+      expect(update.step_assertion_result).toBe("PASS");
     });
 
     it("operational FAIL 保留理由、已用 Executor round 並返回 executor", async () => {

@@ -10,12 +10,15 @@ export interface LogEntry {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  executor_round?: number;
 }
 
 export type AssertionFailureType = "business" | "operational";
 export type TerminationCause =
   | "business_assertion_failure"
   | "operational_budget_exhausted"
+  | "executor_budget_exhausted"
+  | "unsupported_new_page"
   | null;
 
 export const TestState = Annotation.Root({
@@ -31,6 +34,7 @@ export const TestState = Annotation.Root({
 // 執行過程狀態
   current_step_idx: Annotation<number>(),
   executor_turn_count: Annotation<number>(),  // 動作輪次計數（executor 尚未宣告完成前的執行次數）
+  executor_last_round_done: Annotation<boolean>(),
   step_retry_count: Annotation<number>(),     // 斷言重試計數（step_asserter 判定 FAIL 後的重試次數）
   step_assertion_result: Annotation<"PASS" | "FAIL" | null>(),
   step_assertion_reason: Annotation<string>(),

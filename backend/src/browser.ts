@@ -4,6 +4,26 @@ import * as path from "path";
 import { calculateSelector } from "./browser/selector.js";
 import { getSettings } from "./services/settingsService.js";
 
+export function getAnchorHrefInfo(hrefRaw: string, baseUrl: string): {
+  hrefRaw: string;
+  href: string;
+  navigable: boolean;
+} {
+  try {
+    const href = new URL(hrefRaw, baseUrl).href;
+    const protocol = new URL(href).protocol;
+    return {
+      hrefRaw,
+      href,
+      navigable:
+        !hrefRaw.trim().startsWith("#") &&
+        (protocol === "http:" || protocol === "https:"),
+    };
+  } catch {
+    return { hrefRaw, href: "", navigable: false };
+  }
+}
+
 export class BrowserManager {
   public browser: Browser | null = null;
   public context: BrowserContext | null = null;
@@ -161,7 +181,18 @@ export class BrowserManager {
           return;
         }
 
-        results.push(`[${currentId}] <${tagName}${inputType}> ${textContent}`);
+        let linkInfo = "";
+        if (tagName === "a") {
+          const hrefRaw = el.getAttribute("href") || "";
+          const href = (el as HTMLAnchorElement).href || "";
+          let navigable = false;
+          try {
+            const protocol = new URL(href, document.baseURI).protocol;
+            navigable = !hrefRaw.trim().startsWith("#") && (protocol === "http:" || protocol === "https:");
+          } catch {}
+          linkInfo = ` hrefRaw=${JSON.stringify(hrefRaw)} href=${JSON.stringify(href)} navigable=${navigable}`;
+        }
+        results.push(`[${currentId}] <${tagName}${inputType}> ${textContent}${linkInfo}`);
 
         // 渲染浮動貼紙（絕對定位）
         const label = document.createElement("div");
@@ -273,6 +304,15 @@ export class BrowserManager {
           const name = el.getAttribute("name") || "";
           const type = el.getAttribute("type") || "";
           const value = (el as HTMLInputElement).value || ""; // 讀取當前已輸入內容
+          const hrefRaw = tagName === "a" ? el.getAttribute("href") || "" : "";
+          const href = tagName === "a" ? (el as HTMLAnchorElement).href || "" : "";
+          let navigable = false;
+          if (tagName === "a") {
+            try {
+              const protocol = new URL(href, document.baseURI).protocol;
+              navigable = !hrefRaw.trim().startsWith("#") && (protocol === "http:" || protocol === "https:");
+            } catch {}
+          }
 
           // 調用抽離後的定位演算法
           const selector = calculateSelector({
@@ -291,6 +331,9 @@ export class BrowserManager {
             name,
             type,
             value,
+            hrefRaw,
+            href,
+            navigable,
             selector,
           });
         });
@@ -303,6 +346,11 @@ export class BrowserManager {
             if (item.name) desc += ` name="${item.name}"`;
             if (item.placeholder) desc += ` placeholder="${item.placeholder}"`;
             if (item.type) desc += ` type="${item.type}"`;
+            if (item.tagName === "a") {
+              desc += ` hrefRaw=${JSON.stringify(item.hrefRaw)}`;
+              desc += ` href=${JSON.stringify(item.href)}`;
+              desc += ` navigable="${item.navigable}"`;
+            }
             if (item.value) desc += ` value="${item.value}"`; // 渲染 value，補足 AI 感知
             desc += ` selector=\`${item.selector}\``;
             desc += `>`;

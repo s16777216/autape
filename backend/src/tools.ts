@@ -73,22 +73,78 @@ export class BrowserTools {
             timeout: this.elementTimeout,
           });
 
-          if (waitStrategy === "waitForNavigation") {
-            // 同時啟動等待導航與點擊
-            await Promise.all([
-              page.waitForLoadState("networkidle", { timeout: 10000 }),
-              page.click(selector),
-            ]);
-            return `已點擊元素 ID ${id}，並等待頁面導航完成。`;
-          } else if (waitStrategy === "waitForText" && expectedText) {
-            await page.click(selector);
-            await page
-              .getByText(expectedText)
-              .waitFor({ state: "visible", timeout: this.elementTimeout });
-            return `已點擊元素 ID ${id}，並確認畫面出現「${expectedText}」。`;
-          } else {
-            await page.click(selector);
-            return `已點擊元素 ID ${id}。`;
+          let popupPage: any = null;
+          let resolvePopup!: (value: "popup") => void;
+          const popupSignal = new Promise<"popup">((resolve) => {
+            resolvePopup = resolve;
+          });
+          const onPopup = (popup: any) => {
+            popupPage = popup;
+            resolvePopup("popup");
+          };
+          page.on("popup", onPopup);
+
+          try {
+            if (waitStrategy === "waitForNavigation") {
+              const originalUrl = page.url();
+              const documentNavigation = page
+                .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10000 })
+                .then(() => "document_navigation" as const)
+                .catch(() => "timeout" as const);
+              const urlChange = page
+                .waitForURL((url) => url.toString() !== originalUrl, {
+                  waitUntil: "domcontentloaded",
+                  timeout: 10000,
+                })
+                .then(() => "url_change" as const)
+                .catch(() => "timeout" as const);
+
+              await page.click(selector);
+              const outcome = await Promise.race([
+                popupSignal,
+                Promise.race([documentNavigation, urlChange]),
+              ]);
+
+              if (outcome === "popup" && popupPage) {
+                await popupPage.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
+                const popupUrl = popupPage.url();
+                await popupPage.close().catch(() => {});
+                return `錯誤：unsupported_new_page；點擊元素 ID ${id} 開啟了不支援的新分頁：${popupUrl}`;
+              }
+              if (
+                outcome === "timeout" ||
+                (outcome === "url_change" && page.url() === originalUrl)
+              ) {
+                return `點擊元素 ID ${id} 失敗：等待頁面導航逾時；目前網址：${page.url()}`;
+              }
+              await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+              return `已點擊元素 ID ${id}，並完成頁面導航。目前網址：${page.url()}`;
+            } else if (waitStrategy === "waitForText" && expectedText) {
+              await page.click(selector);
+              await Promise.race([popupSignal, page.waitForTimeout(500)]);
+              if (popupPage) {
+                await popupPage.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
+                const popupUrl = popupPage.url();
+                await popupPage.close().catch(() => {});
+                return `錯誤：unsupported_new_page；點擊元素 ID ${id} 開啟了不支援的新分頁：${popupUrl}`;
+              }
+              await page
+                .getByText(expectedText)
+                .waitFor({ state: "visible", timeout: this.elementTimeout });
+              return `已點擊元素 ID ${id}，並確認畫面出現「${expectedText}」。`;
+            } else {
+              await page.click(selector);
+              await Promise.race([popupSignal, page.waitForTimeout(500)]);
+              if (popupPage) {
+                await popupPage.waitForLoadState("domcontentloaded", { timeout: 3000 }).catch(() => {});
+                const popupUrl = popupPage.url();
+                await popupPage.close().catch(() => {});
+                return `錯誤：unsupported_new_page；點擊元素 ID ${id} 開啟了不支援的新分頁：${popupUrl}`;
+              }
+              return `已點擊元素 ID ${id}。`;
+            }
+          } finally {
+            page.off("popup", onPopup);
           }
         } catch (error: any) {
           return `點擊元素 ID ${id} 失敗：${error.message}`;

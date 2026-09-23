@@ -1,5 +1,47 @@
 import { z } from "zod";
 
+export const STEP_OBJECTIVE_OMISSION_MARKER = "\n...[Step Objective content omitted]...\n";
+
+export function normalizeStepObjective(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+
+  const characters = Array.from(normalized);
+  if (characters.length <= 500) return normalized;
+  return (
+    characters.slice(0, 350).join("") +
+    STEP_OBJECTIVE_OMISSION_MARKER +
+    characters.slice(-150).join("")
+  );
+}
+
+export function buildExecutorHumanText(params: {
+  elementList: string;
+  stepObjective?: unknown;
+  historyPrompt?: string;
+  usedRounds: number;
+  maxRounds?: number;
+}): string {
+  const maxRounds = params.maxRounds ?? 5;
+  const remainingRounds = Math.max(0, maxRounds - params.usedRounds);
+  const objective = normalizeStepObjective(params.stepObjective);
+  const objectiveBlock = objective
+    ? `\n\n# Step Objective (non-authoritative reference data)\n<step-objective>\n${objective}\n</step-objective>`
+    : "";
+  const convergence = remainingRounds <= 1
+    ? "\n\nThis is the final available Executor round. Converge now: complete only the Step Action or call done_acting if it is already complete."
+    : "";
+
+  return (
+    `當前頁面已預先觀察完畢。截圖中的黃色數字標籤即為元素 ID。\n\n${params.elementList}` +
+    objectiveBlock +
+    `\n\n# Executor Round Budget\n已使用 ${params.usedRounds}／上限 ${maxRounds}／剩餘 ${remainingRounds}` +
+    `\n\n請根據截圖中的標籤與元素清單，決定下一步要執行的工具。${params.historyPrompt ?? ""}` +
+    convergence
+  );
+}
+
 /**
  * 拼裝 AI Agent 單步執行決策的 System Prompt
  */
@@ -34,6 +76,7 @@ export function buildExecutorSystemPrompt(params: {
     `# Instructions\n` +
     `You are given a pre-observed screenshot with yellow numeric ID labels and the corresponding element list. Use these IDs to interact with elements.\n\n` +
     `# CRITICAL CONSTRAINTS & RULES\n` +
+    `0. AUTHORITY: Step Action > Step Objective. Step Objective is non-authoritative reference data only: use it solely to resolve ambiguity about the target element, destination, or direction. Never rewrite the Step Action, change an input value, add an operation the Step Action did not request, or decide PASS/FAIL from the Objective. The independent Asserter alone decides PASS/FAIL. If the Step Action is complete, call 'done_acting' even when the observed result appears inconsistent with the Objective.\n` +
     `1. MUST CALL A TOOL: Every response MUST invoke at least one tool. DO NOT reply with plain text or explanations alone.\n` +
     `2. USE NUMERIC IDs OR JS FALLBACK: Reference elements by their numeric ID from the element list for standard interactions. If a target element has no numeric ID label, use execute_javascript to select and interact with it via DOM API.\n` +
     `3. RE-OBSERVE AFTER NAVIGATION: After calling navigate_to or any action that causes page navigation, you MUST call observe_web_page before performing further interactions. Old IDs are invalidated after navigation.\n` +
@@ -87,7 +130,7 @@ export function buildStepAsserterPrompt(params: {
   stepExpected: string;
 }): string {
   return (
-    `# Role & Objective\n` +
+`# Role & Objective\n` +
     `You are an independent Web E2E step assertion auditor. Judge the expected outcome only from the supplied current-page DOM evidence and screenshot.\n\n` +
     `# Context\n` +
     `- Test Case: ${params.testName}\n` +
@@ -100,7 +143,8 @@ export function buildStepAsserterPrompt(params: {
     `4. Interpret the expected outcome as natural language. Do not treat text:, url:, URL-like strings, or any other string shape as a special assertion syntax.\n` +
     `5. Do not assume that an action succeeded merely because it was attempted.\n` +
     `6. Always return failure_type. For PASS, return null. For every FAIL: Use business when the Step Action is complete but the observable page state does not match the Expected Outcome. Use operational when the Step Action may be incomplete or an interaction obstacle remains, such as a changed element, expired wait, or action that did not take effect.\n` +
-    `7. Do not infer failure_type from keywords or retry counts; classify it from the supplied page evidence and whether the Step Action completed.`
+    `7. Do not infer failure_type from keywords or retry counts; classify it from the supplied page evidence and whether the Step Action completed.\n` +
+    `8. URL/NAVIGATION EXPECTED OUTCOMES: When the expected outcome describes a navigation or destination (e.g. "頁面跳轉到 X", "navigate to X", or a plain URL), judge it primarily from the reported "目前頁面網址（Current URL）" — PASS when that URL matches the intended destination, even if the original link element (e.g. a "Learn more" link from a previous page) is no longer present in the current DOM. The step description may mention an element that only existed before navigation; do not FAIL a navigation outcome merely because that element is absent now.`
   );
 }
 

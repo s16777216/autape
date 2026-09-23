@@ -6,19 +6,21 @@ import { LogEntry } from "../state.js";
 export function routeAfterExecution(state: {
   logs: LogEntry[];
   executor_turn_count: number;
+  executor_last_round_done?: boolean;
+  termination_cause?: string | null;
   current_step_idx: number;
   step_expecteds: string[];
 }): "executor" | "step_asserter" | "reporter" {
   const logs = state.logs || [];
-  if (logs.length === 0) {
-    return "executor";
+  if (state.termination_cause === "unsupported_new_page") {
+    return "reporter";
   }
 
-  // 讀取最後一筆日誌，判斷是否呼叫了 done_acting
-  const last_log = logs[logs.length - 1];
-  const action = last_log.action || "";
-
-  if (action.includes("done_acting")) {
+  const legacyLastAction = logs[logs.length - 1]?.action || "";
+  if (
+    state.executor_last_round_done === true ||
+    (state.executor_last_round_done === undefined && legacyLastAction.includes("done_acting"))
+  ) {
     return "step_asserter";
   }
 

@@ -4,6 +4,7 @@ import { FoldersIcon } from "@/components/icon/folders";
 import { HistoryIcon } from "@/components/icon/history";
 import { SettingsIcon } from "@/components/icon/settings";
 import { Bot } from "lucide-react";
+import { User as UserIcon } from "lucide-react";
 
 export interface MenuItem {
   title: string;
@@ -31,6 +32,11 @@ export const sidebarMenuItems: MenuItem[] = [
     title: "系統設定",
     path: "/settings",
     iconNode: <SettingsIcon size={16} />,
+  },
+  {
+    title: "使用者管理",
+    path: "/users",
+    iconNode: <UserIcon size={16} />,
   },
   {
     title: "模型管理",

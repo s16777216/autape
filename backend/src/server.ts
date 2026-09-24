@@ -13,10 +13,13 @@ import { taskRouter } from "./routes/task.js";
 import { settingsRouter } from "./routes/settings.js";
 import { modelsRouter } from "./routes/models.js";
 import { exportImportRouter } from "./routes/exportImport.js";
+import { authRouter } from "./routes/auth.js";
+import { usersRouter } from "./routes/users.js";
 
 const app = new Hono();
 
 // 註冊子路由器，以保證與前端原有 API 路徑相容
+app.route("/api/auth", authRouter);
 app.route("/api/projects", projectRouter);
 app.route("/api", exportImportRouter);
 app.route("/api", groupRouter);
@@ -25,6 +28,7 @@ app.route("/api", runRouter);
 app.route("/api", taskRouter);
 app.route("/api", settingsRouter);
 app.route("/api/models", modelsRouter);
+app.route("/api", usersRouter);
 
 // 託管前端編譯出來的靜態資源，並支援 SPA 路由
 app.use("/*", serveStatic({

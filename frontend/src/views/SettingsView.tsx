@@ -221,9 +221,12 @@ export default function SettingsView() {
 
   return (
     <div className="flex-1 flex flex-col bg-zinc-950 text-zinc-100 p-8 select-none">
-      <h1 className="text-2xl font-bold tracking-tight mb-8">系統全域設定</h1>
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-2xl font-bold tracking-tight">系統設定</h1>
+      </div>
 
-      <div className="mx-auto w-full space-y-10">
+
+        <div className="mx-auto w-full space-y-10">
         {/* 區塊一：瀏覽器與執行參數 */}
         <FormBlock
           label="瀏覽器與執行參數"
@@ -628,9 +631,9 @@ export default function SettingsView() {
                 </div>
               </CardContent>
             </Card>
+            </div>
           </div>
         </div>
-      </div>
 
       <BaseDialog
         open={showClearDialog}

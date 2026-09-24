@@ -12,6 +12,8 @@ import { TestRunStep } from "./entities/TestRunStep.js";
 import { TestcaseStep } from "./entities/TestcaseStep.js";
 import { SystemSetting } from "./entities/SystemSetting.js";
 import { ModelSetting } from "./entities/ModelSetting.js";
+import { User } from "./entities/User.js";
+import bcrypt from "bcryptjs";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -20,7 +22,7 @@ export const AppDataSource = new DataSource({
   url: databaseUrl || "postgres://postgres:postgres@localhost:5432/e2e_manager",
   synchronize: true, // 自動同步 Schema 到資料庫
   logging: false,
-  entities: [Project, TestGroup, Testcase, TestRun, TestLog, Task, TestRunStep, TestcaseStep, SystemSetting, ModelSetting],
+  entities: [Project, TestGroup, Testcase, TestRun, TestLog, Task, TestRunStep, TestcaseStep, SystemSetting, ModelSetting, User],
   extra: {
     max: 1, // 限制連線池大小為 1，防範 WSL2 Mirrored 網路的 TCP 重複連線 bug
   },
@@ -108,6 +110,23 @@ export async function initDB() {
     }
   } catch (err: any) {
     console.error("[DB] 初始化系統設定失敗：", err.message);
+  }
+
+  // 初始化預設管理員帳號
+  try {
+    const userRepo = AppDataSource.getRepository(User);
+    const userCount = await userRepo.count();
+    if (userCount === 0) {
+      const adminUser = new User();
+      adminUser.username = "admin";
+      adminUser.email = "admin@e2e.local";
+      adminUser.passwordHash = await bcrypt.hash("admin123", 10);
+      adminUser.role = "admin";
+      await userRepo.save(adminUser);
+      console.log("[DB] 檢測到使用者表為空，已成功建立預設管理員帳號 (admin / admin123)。");
+    }
+  } catch (err: any) {
+    console.error("[DB] 初始化預設管理員失敗：", err.message);
   }
 
   // 寫入步驟遷移資料

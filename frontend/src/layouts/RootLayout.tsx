@@ -9,9 +9,11 @@ import SidebarFooter from "./SidebarFooter";
 import { sidebarMenuItems } from "@/config/menu";
 import { useCallback, useRef } from "react";
 import { LayoutContext } from "@/layouts/LayoutContext";
+import { useAuth } from "@/context/AuthContext";
 
 export default function RootLayout() {
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const { user } = useAuth();
 
   const scrollToTop = useCallback((smooth = true) => {
     scrollViewportRef.current?.scrollTo({
@@ -28,15 +30,21 @@ export default function RootLayout() {
     <LayoutContext.Provider value={{ scrollViewportRef, scrollToTop, scroll }}>
       <SidebarProvider className="h-svh overflow-hidden">
         <SidebarContainer header={<SidebarHeader />} footer={<SidebarFooter />}>
-          {sidebarMenuItems.map((item) => (
-            <SidebarItem
-              key={item.path}
-              iconNode={item.iconNode}
-              path={item.path}
-            >
-              {item.title}
-            </SidebarItem>
-          ))}
+          {sidebarMenuItems.map((item) => {
+            // Skip members management item for non-admin users
+            if (item.path === "/users" && user?.role !== "admin") {
+              return null;
+            }
+            return (
+              <SidebarItem
+                key={item.path}
+                iconNode={item.iconNode}
+                path={item.path}
+              >
+                {item.title}
+              </SidebarItem>
+            );
+          })}
         </SidebarContainer>
 
         {/* 右側主要工作區 (Workspace) */}

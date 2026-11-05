@@ -11,7 +11,7 @@ metadata:
 
 Start a new change using the experimental artifact-driven approach.
 
-**Input**: The argument after `/opsx-new` is the change name (kebab-case), OR a description of what the user wants to build.
+**Input**: The argument after `openspec-new-change` is the change name (kebab-case), OR a description of what the user wants to build.
 
 **Steps**
 
@@ -63,12 +63,13 @@ After completing the steps, summarize:
 - Schema/workflow being used and its artifact sequence
 - Current status (0/N artifacts complete)
 - The template for the first artifact
-- Prompt: "Ready to create the first artifact? Run `/opsx-continue` or just describe what this change is about and I'll draft it."
-- Tip: Mention that custom verification is available via `openspec/VERIFY.md` — it defines per-repo checks that run during `/opsx-verify`.
+- Prompt: "Ready to create the first artifact? Run `openspec-continue-change` or just describe what this change is about and I'll draft it."
+- Tip: Mention that custom verification is available via `openspec/VERIFY.md` — it defines per-repo checks that run during `openspec-verify-change`.
+- Setup hint (only if `openspec/VERIFY.md` or `openspec/GLOSSARY.md` is missing): add one line - "`openspec/VERIFY.md` / `openspec/GLOSSARY.md` is missing. Run `openspec-setup` to create it." Name only the missing file or files. Do NOT create them here.
 
 **Guardrails**
 - Do NOT create any artifacts yet - just show the instructions
 - Do NOT advance beyond showing the first artifact template
 - If the name is invalid (not kebab-case), ask for a valid name
-- If a change with that name already exists, suggest using `/opsx-continue` instead
+- If a change with that name already exists, suggest using `openspec-continue-change` instead
 - Pass --schema if using a non-default workflow

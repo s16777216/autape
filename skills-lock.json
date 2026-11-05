@@ -7,6 +7,96 @@
       "skillPath": "SKILL.md",
       "computedHash": "9e9d17f9df4712080eb2a602071328e3d76f25541248d29e2f7c93b2f8f7f606"
     },
+    "openspec-apply-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-apply-change/SKILL.md",
+      "computedHash": "1d678a0c23254b34cb4412ca3f8c04420e02519555a95ff3b0b616caae303ff8"
+    },
+    "openspec-archive-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-archive-change/SKILL.md",
+      "computedHash": "0a439ccfc52df261d83213e93648c5df9a4cef76d8bca92e63086ba499368174"
+    },
+    "openspec-bulk-archive-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-bulk-archive-change/SKILL.md",
+      "computedHash": "67af810e809b9e7541709680a02cdd5f7c2d8eb77f7b6101670b6d62a6a9afd8"
+    },
+    "openspec-continue-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-continue-change/SKILL.md",
+      "computedHash": "dd546e2fc3a7ed24d38d05b1f01b73931bb60d3ab991b5a22cb3079aa32aa48f"
+    },
+    "openspec-explore": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-explore/SKILL.md",
+      "computedHash": "788140382faf44513c42c739756ba6a77a5dacaf63d9ad0b39d67b9232701e77"
+    },
+    "openspec-ff-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-ff-change/SKILL.md",
+      "computedHash": "f9570c24fd291d30b5b987fc51d79aac88467dfd7528ae658d5d94f522100dbe"
+    },
+    "openspec-grill": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-grill/SKILL.md",
+      "computedHash": "ce775f648158154a4902f3f08917c6956cc027c38377c8b8192d9e5a2b84e723"
+    },
+    "openspec-new-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-new-change/SKILL.md",
+      "computedHash": "7d6c1a653ad39c30d10c0c1e5c112d385db40c06f8e03a65c44f6210917fb548"
+    },
+    "openspec-onboard": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-onboard/SKILL.md",
+      "computedHash": "261581ca2899c3d23c06457ba3816f3d377a413eb4a50520cae5806f4146f21e"
+    },
+    "openspec-propose": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-propose/SKILL.md",
+      "computedHash": "919650052cb6d11c77929a32fd78279ae4aa2c5e0304b3c1ceff7e0c58e2dd32"
+    },
+    "openspec-setup": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-setup/SKILL.md",
+      "computedHash": "7ae9ba6ebd45a0f8769b948756c3c2cf389831286bfa115879e1ab08e28c63e2"
+    },
+    "openspec-status": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-status/SKILL.md",
+      "computedHash": "be4fe67366caad1540c36d7a18d2e76f5449bc154598890469b1350113848848"
+    },
+    "openspec-sync-specs": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-sync-specs/SKILL.md",
+      "computedHash": "3b49d5d42937d4d369e6e58bd11f363e0120e9e6e4e0d3982c8a5b8c115b69d7"
+    },
+    "openspec-update-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-update-change/SKILL.md",
+      "computedHash": "9fc198858c40408c7b1dac9e13078b37ea6ad01994ad4d4a4556dd3a17ec9896"
+    },
+    "openspec-verify-change": {
+      "source": "s16777216/openspec-improve",
+      "sourceType": "github",
+      "skillPath": "skills/openspec-verify-change/SKILL.md",
+      "computedHash": "348cf236592e3aabbab860d81c7af4b525a792f658f554e23099852fe3bb4a64"
+    },
     "react-hook-form": {
       "source": "midudev/autoskills",
       "sourceType": "github",

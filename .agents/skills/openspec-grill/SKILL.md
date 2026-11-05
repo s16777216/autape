@@ -11,7 +11,7 @@ metadata:
 
 Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
 
-**Input**: The argument after `/opsx-grill` is whatever the user wants to stress-test. Could be:
+**Input**: The argument after `openspec-grill` is whatever the user wants to stress-test. Could be:
 - A plan or design
 - A specific decision ("should we use Redis or Postgres?")
 - A change name (to grill in context of that change)
@@ -207,7 +207,7 @@ Grill is a thinking phase — it never writes files. When the frontier is empty 
 1. **List detected terms**: Present a draft list of all detected terms
 2. **Ask for each term**: Confirm definition + aliases
 3. **User decides**: Only confirmed terms pass through to the summary
-4. **Include in the final summary** as **Terms to Record** — `/opsx-propose` (or `/opsx-continue`) writes them to change-level `GLOSSARY.md`
+4. **Include in the final summary** as **Terms to Record** — `openspec-propose` (or `openspec-continue-change`) writes them to change-level `GLOSSARY.md`
 
 **Format** (as recorded by propose):
 ```
@@ -230,7 +230,7 @@ The session is done when the frontier is empty: every branch of the design tree 
 
 When the frontier is empty:
 
-1. **Process detected terms** (if any) — list, confirm with user, then carry confirmed terms into the summary as **Terms to Record** (see ## Detecting & Handing Off Terms). Do NOT write to any file — GLOSSARY.md is written by `/opsx-propose` or `/opsx-continue`.
+1. **Process detected terms** (if any) — list, confirm with user, then carry confirmed terms into the summary as **Terms to Record** (see ## Detecting & Handing Off Terms). Do NOT write to any file — GLOSSARY.md is written by `openspec-propose` or `openspec-continue-change`.
 
 2. **Then summarize:**
 
@@ -244,7 +244,7 @@ When the frontier is empty:
 - Q2: [answer]
 - ...
 
-**Terms to Record** (for /opsx-propose):
+**Terms to Record** (for openspec-propose):
 - **Term** — Definition. Aliases: alias1、alias2。
 - ...
 

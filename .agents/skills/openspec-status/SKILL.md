@@ -33,6 +33,8 @@ Also check project-level context files if present:
 - `openspec/GLOSSARY.md` — project terms
 - `openspec/VERIFY.md` — project verification config
 
+If either file is missing, remember it for the **Setup hint** (see Guardrails). A missing file is NOT an error.
+
 ### 2. No changes → report that and stop
 
 If there are zero active changes, say so plainly and stop. Example:
@@ -42,7 +44,7 @@ If there are zero active changes, say so plainly and stop. Example:
 
 No active changes right now.
 
-The workspace is clean. Use `/opsx-propose` to start something new.
+The workspace is clean. Use `openspec-propose` to start something new.
 ```
 
 Do NOT invent work or force suggestions.
@@ -84,11 +86,11 @@ Keep it **scan-friendly**. One section per change, each condensed. Suggested sha
 
 ### fix-db-migration — "Repair flaky migration ordering"
 - Stage: ready-for-review  •  Progress: 7/7 tasks
-- Next: run `/opsx-verify fix-db-migration` then archive
+- Next: run `openspec-verify-change fix-db-migration` then archive
 
 ### dark-mode — "UI theme toggle"
 - Stage: ideation  •  Progress: 0/4 tasks
-- Next: `/opsx-grill` to sharpen requirements before proposing
+- Next: `openspec-grill` to sharpen requirements before proposing
 ```
 
 Finish with a single **"Recommended next action"** line — pick the ONE highest-leverage thing across all changes (don't enumerate everything).
@@ -101,10 +103,10 @@ Use this rough priority to pick the single best next move:
 
 | If a change is...                | Recommended next action                       |
 | -------------------------------- | --------------------------------------------- |
-| `ready-for-review`               | verify then archive (`/opsx-verify <name>`)   |
-| `in-progress` + no blocker       | continue applying (`/opsx-apply <name>`)      |
-| `in-progress` + blocker found    | surface the blocker, suggest `/opsx-explore`  |
-| `ideation`                       | grill to firm up (`/opsx-grill`)              |
+| `ready-for-review`               | verify then archive (`openspec-verify-change <name>`)   |
+| `in-progress` + no blocker       | continue applying (`openspec-apply-change <name>`)      |
+| `in-progress` + blocker found    | surface the blocker, suggest `openspec-explore`  |
+| `ideation`                       | grill to firm up (`openspec-grill`)              |
 | multiple changes ready           | archive ready ones first to reduce queue      |
 
 If nothing is clearly highest-leverage, say so honestly instead of forcing a pick.
@@ -113,10 +115,11 @@ If nothing is clearly highest-leverage, say so honestly instead of forcing a pic
 
 ## Guardrails
 
+- **Setup hint** — if `openspec/VERIFY.md` or `openspec/GLOSSARY.md` is missing, end the report (also the "no active changes" report) with one line: "`<missing file>` is missing. Run `openspec-setup` to create it." Name only the missing files. Do NOT create them here. Skip the line when both files exist.
 - **Report only** — never apply, verify, archive, or create/update artifacts yourself. You surface and recommend; the user decides.
 - **Concise** — this is the "get up to speed in 5 seconds" command. No walls of text per change.
 - **Don't guess** — if `tasks.md` is missing or unclear, say "no task data" rather than invent progress.
 - **Ground in reality** — read the actual artifacts; don't summarize from memory or assumption.
 - **Honest about blockers** — if something's stuck, say it. Don't sugarcoat.
 - **Handle empty gracefully** — zero changes is a valid, complete answer.
-- **Use `/opsx-explore`** for anything that needs deep thinking; this command is the overview, not the investigation.
+- **Use `openspec-explore`** for anything that needs deep thinking; this command is the overview, not the investigation.

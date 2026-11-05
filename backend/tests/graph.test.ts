@@ -542,7 +542,7 @@ describe("狀態機 Prompt 拼接與條件路由單元測試", () => {
       expect(update.step_assertion_result).toBe("FAIL");
       expect(update.step_assertion_failure_type).toBe("operational");
       expect(update.termination_cause).toBeNull();
-      expect(update.executor_turn_count).toBeUndefined();
+      expect((update as Record<string, unknown>).executor_turn_count).toBeUndefined();
       expect(update.step_retry_count).toBe(4);
       expect(update.logs.at(-1)).toMatchObject({
         action: "assert_failure",

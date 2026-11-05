@@ -1,4 +1,4 @@
-import { DynamicStructuredToolInput, tool } from "@langchain/core/tools";
+import { DynamicStructuredToolInput, StructuredTool, tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { BrowserManager } from "./browser.js";
 
@@ -9,7 +9,7 @@ export class BrowserTools {
   /**
    * 取得綁定了 Playwright 實例的 LangChain Tools 列表
    */
-  public getTools() {
+  public getTools(): StructuredTool[] {
     const navigate_to = tool(
       async ({ url }) => {
         try {

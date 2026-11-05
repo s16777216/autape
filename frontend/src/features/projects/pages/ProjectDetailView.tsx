@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useParams, useNavigate, useRouteLoaderData } from "react-router-dom";
 import { useGroupData } from "../hooks/useGroupData";
 import { type ColumnDef, type ExpandedState } from "@tanstack/react-table";
@@ -62,17 +62,20 @@ export default function ProjectDetailView() {
   };
 
   // 觸發群組全部執行
-  const handleRunGroup = async (groupId: string) => {
-    try {
-      toast.info("正在初始化群組測試任務...");
-      const res = await api.runGroup(groupId);
-      toast.success("群組測試任務已啟動！正在轉跳監控頁面...");
-      navigate(`/project/${projectId}/tasks/${res.taskId}`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast.error("啟動群組測試失敗：" + msg);
-    }
-  };
+  const handleRunGroup = useCallback(
+    async (groupId: string) => {
+      try {
+        toast.info("正在初始化群組測試任務...");
+        const res = await api.runGroup(groupId);
+        toast.success("群組測試任務已啟動！正在轉跳監控頁面...");
+        navigate(`/project/${projectId}/tasks/${res.taskId}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error("啟動群組測試失敗：" + msg);
+      }
+    },
+    [projectId, navigate],
+  );
 
   // 群組樹狀態
   const {
@@ -142,18 +145,21 @@ export default function ProjectDetailView() {
     }
   };
 
-  const triggerDeleteTestCase = (tcId: string) => {
-    let name = "";
-    for (const gid of Object.keys(testcasesMap)) {
-      const found = testcasesMap[gid]?.find((tc) => tc.id === tcId);
-      if (found) {
-        name = found.name;
-        break;
+  const triggerDeleteTestCase = useCallback(
+    (tcId: string) => {
+      let name = "";
+      for (const gid of Object.keys(testcasesMap)) {
+        const found = testcasesMap[gid]?.find((tc) => tc.id === tcId);
+        if (found) {
+          name = found.name;
+          break;
+        }
       }
-    }
-    setDeleteTestCaseId(tcId);
-    setDeleteTestCaseName(name);
-  };
+      setDeleteTestCaseId(tcId);
+      setDeleteTestCaseName(name);
+    },
+    [testcasesMap],
+  );
 
   // 樹狀展開狀態
   const [expanded, setExpanded] = useState<ExpandedState>({});
@@ -262,7 +268,9 @@ export default function ProjectDetailView() {
   };
 
   // 建立巢狀的 Tree Rows 用於 DataTable 渲染
-  const buildNestedTree = (nodes: TestGroup[]): ProjectTreeRow[] => {
+  const buildNestedTree = useCallback(function build(
+    nodes: TestGroup[],
+  ): ProjectTreeRow[] {
     return nodes.map((node) => {
       const hasLoaded = node.id in testcasesMap;
       const tcs = testcasesMap[node.id] || [];
@@ -286,7 +294,7 @@ export default function ProjectDetailView() {
 
       // 2. 遞迴加入子群組
       if (node.children && node.children.length > 0) {
-        childrenList.push(...buildNestedTree(node.children));
+        childrenList.push(...build(node.children));
       }
 
       // 3. 加入該群組下的測試案例
@@ -316,11 +324,11 @@ export default function ProjectDetailView() {
         originalData: node,
       };
     });
-  };
+  }, [testcasesMap, loadingMap]);
 
   const nestedTree = useMemo(
     () => buildNestedTree(groupTree),
-    [groupTree, testcasesMap, loadingMap],
+    [groupTree, buildNestedTree],
   );
 
   // 扁平化群組列表 (供測試案例 Dialog 下拉選單使用)

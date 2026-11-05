@@ -80,7 +80,7 @@ export function JsonEditorAccordion({
       localStorage: parsedLocalStorage,
       isValid,
     });
-  }, [cookiesStr, localStorageStr]);
+  }, [cookiesStr, localStorageStr, parsedCookies, parsedLocalStorage, isValid]);
 
   return (
     <div className="flex flex-col gap-4">

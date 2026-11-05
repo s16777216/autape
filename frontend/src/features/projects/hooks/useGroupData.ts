@@ -1,7 +1,36 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { api } from "../../../lib/api"
 import type { TestGroup, VariableItem } from "../../../types/api"
 import { toast } from "sonner"
+
+// 遞迴處理樹狀結構，補全 parentId 並扁平化收集至一維陣列
+function processGroupTree(
+  nodes: TestGroup[],
+  parentId: string | null = null
+): { tree: TestGroup[]; flat: TestGroup[] } {
+  let flat: TestGroup[] = []
+  const tree = nodes.map((node) => {
+    const currentParentId = node.parentId || node.parent?.id || parentId
+    const mappedNode: TestGroup = {
+      ...node,
+      parentId: currentParentId,
+    }
+
+    flat.push(mappedNode)
+
+    if (node.children && node.children.length > 0) {
+      const result = processGroupTree(node.children, node.id)
+      mappedNode.children = result.tree
+      flat = flat.concat(result.flat)
+    } else {
+      mappedNode.children = []
+    }
+
+    return mappedNode
+  })
+
+  return { tree, flat }
+}
 
 export function useGroupData(projectId: string | undefined) {
   const [groups, setGroups] = useState<TestGroup[]>([])
@@ -9,36 +38,7 @@ export function useGroupData(projectId: string | undefined) {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [isLoading, setIsLoading] = useState(false)
 
-  // 遞迴處理樹狀結構，補全 parentId 並扁平化收集至一維陣列
-  const processGroupTree = (
-    nodes: TestGroup[],
-    parentId: string | null = null
-  ): { tree: TestGroup[]; flat: TestGroup[] } => {
-    let flat: TestGroup[] = []
-    const tree = nodes.map((node) => {
-      const currentParentId = node.parentId || node.parent?.id || parentId
-      const mappedNode: TestGroup = {
-        ...node,
-        parentId: currentParentId,
-      }
-
-      flat.push(mappedNode)
-
-      if (node.children && node.children.length > 0) {
-        const result = processGroupTree(node.children, node.id)
-        mappedNode.children = result.tree
-        flat = flat.concat(result.flat)
-      } else {
-        mappedNode.children = []
-      }
-
-      return mappedNode
-    })
-
-    return { tree, flat }
-  }
-
-  const loadGroups = async (projId: string) => {
+  const loadGroups = useCallback(async (projId: string) => {
     setIsLoading(true)
     try {
       const data = await api.getGroups(projId)
@@ -51,7 +51,7 @@ export function useGroupData(projectId: string | undefined) {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [])
 
   const handleCreateSubgroup = async (name: string, parentId: string | null, initCookies?: unknown, initLocalStorage?: unknown, variables?: Record<string, VariableItem>) => {
     if (!name.trim() || !projectId) return null
@@ -95,7 +95,7 @@ export function useGroupData(projectId: string | undefined) {
     return () => {
       active = false
     }
-  }, [projectId])
+  }, [projectId, loadGroups])
 
   return {
     groups,

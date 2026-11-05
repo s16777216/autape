@@ -158,8 +158,8 @@ describe("歷史軌跡重放 (Replay Mode) 單元測試", () => {
     });
 
     it("當測試案例版本自增更新後，舊版本 (v1) 的重放軌跡應被視為未命中", () => {
-      const currentTestcaseVersion = 2;
-      const historicalRunVersion = 1;
+      const currentTestcaseVersion: number = 2;
+      const historicalRunVersion: number = 1;
 
       // 模擬重放條件判定
       const isVersionMatch = historicalRunVersion === currentTestcaseVersion;
